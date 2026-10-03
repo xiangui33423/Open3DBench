@@ -3,11 +3,15 @@
 # caller persists the shared ODB/DEF used by both die routing processes.
 namespace eval mls_prepare {
   variable script_dir [file dirname [file normalize [info script]]]
+  variable die_cache [dict create]
 
   proc json_string {value} {
     set escaped [string map [list \\ \\\\ \" \\\" \n \\n \r \\r \t \\t \b \\b \f \\f] $value]
     # Instance/net names can contain Tcl metacharacters and control characters.
     # JSON encoding must preserve their literal spelling without evaluation.
+    # Normal DEF names contain no control bytes after the string-map above.
+    # Avoid a per-character Tcl loop for every net and terminal in large cases.
+    if {![regexp {[\x00-\x1f]} $escaped]} { return \"$escaped\" }
     set result ""
     foreach ch [split $escaped ""] {
       scan $ch %c code
@@ -25,10 +29,20 @@ namespace eval mls_prepare {
   }
 
   proc instance_die {inst} {
-    foreach name [list [$inst getName] [[$inst getMaster] getName]] {
-      if {[string match *_bottom $name]} { return bottom }
-      if {[string match *_upper $name]} { return upper }
+    variable die_cache
+    set inst_name [$inst getName]
+    if {[dict exists $die_cache $inst_name]} { return [dict get $die_cache $inst_name] }
+    foreach name [list $inst_name [[$inst getMaster] getName]] {
+      if {[string match *_bottom $name]} {
+        dict set die_cache $inst_name bottom
+        return bottom
+      }
+      if {[string match *_upper $name]} {
+        dict set die_cache $inst_name upper
+        return upper
+      }
     }
+    dict set die_cache $inst_name ""
     return ""
   }
 
@@ -157,6 +171,8 @@ namespace eval mls_prepare {
   }
 
   proc export_manifest {path db block bottom_master} {
+    variable die_cache
+    set die_cache [dict create]
     set dbu [$block getDbUnitsPerMicron]
     set grid [[ord::get_db_tech] getManufacturingGrid]
     if {$grid < 1} { set grid 1 }

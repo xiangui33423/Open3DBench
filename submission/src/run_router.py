@@ -71,13 +71,15 @@ def resolve_executable(root: Path, threads: int) -> str:
     return str(binary)
 
 
-def run_openroad(exe: str, script: Path, env: dict[str, str], log: Path) -> None:
+def run_openroad(exe: str, script: Path, env: dict[str, str], log: Path) -> float:
     print(f'OpenROAD: {script.name}; log: {log}', flush=True)
+    stage_start = time.monotonic()
     with log.open('w') as output:
         result = subprocess.run([exe, '-exit', '-no_init', str(script)], env=env, stdout=output, stderr=subprocess.STDOUT)
     if result.returncode:
         tail = log.read_text(errors='replace').splitlines()[-30:]
         raise RuntimeError(f'OpenROAD exited {result.returncode}:\n' + '\n'.join(tail))
+    return round(time.monotonic() - stage_start, 3)
 
 
 def atomic_copy(source: Path, destination: Path) -> None:
@@ -132,7 +134,7 @@ def main() -> None:
         'set submission_libs [list ' + ' '.join(tcl_quote(str(p)) for p in libs) + ']\n')
     env.setdefault('VALIDATE_DIE_GUIDES', '1')
     # Public case configs allow overflow for the fixed detailed-route evaluator.
-    env.setdefault('GLOBAL_ROUTE_ARGS', '-allow_congestion -congestion_iterations 2 -congestion_report_iter_step 5 -verbose')
+    env.setdefault('GLOBAL_ROUTE_ARGS', '-allow_congestion -congestion_iterations 1 -congestion_report_iter_step 5 -verbose')
     if env.get('MLS_ENABLE', '1') != '0':
         hook = root / 'flow_scripts/scripts_3D/prepare_mls.tcl'
         if not hook.is_file():
@@ -141,22 +143,20 @@ def main() -> None:
         env.setdefault('MLS_CONFIG', str(root / 'flow_scripts/scripts_3D/mls_config.json'))
     else:
         env.pop('GRT_PREPARE_TCL', None)
-    probe = work / 'probe.tcl'
-    probe.write_text('if {[info commands set_net_routing_layers] eq ""} {error "Required set_net_routing_layers is unavailable; compile the submitted GRT overlay with build.sh"}\nputs "SUBMISSION_LAYER_CLAMP_READY"\n')
-    run_openroad(exe, probe, env, logs / 'probe.log')
-    if 'SUBMISSION_LAYER_CLAMP_READY' not in (logs / 'probe.log').read_text():
+    stage_seconds = {}
+    stage_seconds['load_input'] = run_openroad(exe, root / 'src/load_input.tcl', env, logs / 'load_input.log')
+    if 'SUBMISSION_LAYER_CLAMP_READY' not in (logs / 'load_input.log').read_text():
         raise RuntimeError('OpenROAD initialization or layer-clamp probe failed')
-    run_openroad(exe, root / 'src/load_input.tcl', env, logs / 'load_input.log')
     if not (results / '4_cts.odb').is_file():
         raise RuntimeError('Input conversion did not create 4_cts.odb')
-    run_openroad(exe, root / 'flow_scripts/scripts/global_route_die_by_die.tcl', env, logs / 'global_route.log')
+    stage_seconds['global_route'] = run_openroad(exe, root / 'flow_scripts/scripts/global_route_die_by_die.tcl', env, logs / 'global_route.log')
     odb, guide, marker = results / '5_1_grt.odb', results / 'route.guide', results / '.grt_finalize_complete'
     if not marker.is_file() or not odb.is_file() or not odb.stat().st_size or not guide.is_file() or not guide.stat().st_size:
         raise RuntimeError(f'Routing did not publish complete output; inspect {logs}')
     # Re-open the freshly written ODB with the same executable before publishing.
     verify = work / 'verify.tcl'
     verify.write_text(f'read_db {tcl_quote(str(odb))}\nwrite_def {tcl_quote(str(results / "submission.def"))}\nputs "SUBMISSION_ODB_READABLE"\n')
-    run_openroad(exe, verify, env, logs / 'verify.log')
+    stage_seconds['verify_odb'] = run_openroad(exe, verify, env, logs / 'verify.log')
     if 'SUBMISSION_ODB_READABLE' not in (logs / 'verify.log').read_text():
         raise RuntimeError('Fresh ODB failed reopen verification')
     atomic_copy(odb, output / '5_1_grt.odb')
@@ -170,6 +170,9 @@ def main() -> None:
         'openroad_exe': exe, 'threads': args.threads,
         'mls_enabled': env.get('MLS_ENABLE', '1') != '0',
         'runtime_seconds': round(time.monotonic() - started, 3),
+        'stage_seconds': stage_seconds,
+        'global_route_args': env['GLOBAL_ROUTE_ARGS'],
+        'grt_process_mode': env.get('GRT_PROCESS_MODE', 'single'),
         'odb_bytes': odb.stat().st_size, 'work_dir': str(work),
     }
     (output / 'run_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

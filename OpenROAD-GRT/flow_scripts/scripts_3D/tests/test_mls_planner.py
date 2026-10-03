@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import json
 import re
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from mls_planner import plan_design, tcl_word
+from mls_planner import DemandGrid, HbtSites, config_values, hpwl, plan_design, place_pair, tcl_word
 
 
 def signal_net(name="data[3]", die="bottom", y=25000):
@@ -261,6 +262,38 @@ class MlsPlannerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pitch lattice"):
             plan_design(design, PERMISSIVE)
 
+    def test_demand_updates_match_rebuilt_grid(self):
+        design = manifest([signal_net("a"), signal_net("b", y=65000)])
+        demand = DemandGrid(design["die_area"], 16, design["nets"], 1000)
+        moved = copy.deepcopy(design["nets"][0])
+        demand.adjust("bottom", moved["pins"], -1, 1000)
+        for pin in moved["pins"]:
+            pin["die"] = "upper"
+        demand.adjust("upper", moved["pins"], 1, 1000)
+        rebuilt = DemandGrid(design["die_area"], 16, [moved, design["nets"][1]], 1000)
+        for die in ("bottom", "upper"):
+            for bounds in ([0, 0, 200000, 200000], [10000, 20000, 50000, 80000],
+                           [50000, 10000, 150000, 35000]):
+                self.assertAlmostEqual(demand.mean(die, bounds), rebuilt.mean(die, bounds))
+
+    def test_joint_placement_reduces_chain_detour(self):
+        design = manifest()
+        net = signal_net()
+        # The near group has a wide flat bbox optimum. Moving its HBT toward
+        # the second group avoids unnecessary travel back to the median.
+        net["pins"][1]["x"] = 100000
+        a, b = net["pins"][:2], net["pins"][2:]
+        sites = HbtSites(design["die_area"], [1000, 1000], 6400, 5, design["hbts"])
+        old = place_pair(sites, a, b, (20000, 25000), (140000, 25000), 8, False)
+        new = place_pair(sites, a, b, (20000, 25000), (140000, 25000), 8, True)
+        def chain(points):
+            p0, p1 = points
+            return (hpwl(a + [{"x": p0[0], "y": p0[1]}]) +
+                    abs(p0[0] - p1[0]) + abs(p0[1] - p1[1]) +
+                    hpwl(b + [{"x": p1[0], "y": p1[1]}]))
+        self.assertLess(chain(new), chain(old))
+        self.assertTrue(sites.legal(new[1], [new[0]]))
+
     def test_configuration_cannot_weaken_pitch_or_capacity(self):
         for overrides in ({"pitch_um": 3.2}, {"capacity_fraction": 0.31},
                           {"max_new_hbts": -1}, {"enabled": "false"},
@@ -268,6 +301,19 @@ class MlsPlannerTest(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 with self.assertRaises(ValueError):
                     plan_design(manifest(), overrides)
+
+    @unittest.skipUnless(shutil.which("tclsh"), "Tcl interpreter is unavailable")
+    def test_manifest_json_encoder_preserves_names_and_all_control_bytes(self):
+        definitions = (SCRIPT_DIR / "prepare_mls.tcl").read_text().rsplit("mls_prepare::run", 1)[0]
+        names = ['icache_1/_21919_', 'data[3]$name"\\next',
+                 ''.join(chr(i) for i in range(32)), '层共享/信号']
+        script = definitions + "\n"
+        for name in names:
+            script += 'set value [encoding convertfrom utf-8 [binary decode hex ' + name.encode().hex() + ']]\n'
+            script += 'puts [mls_prepare::json_string $value]\n'
+        result = subprocess.run([shutil.which("tclsh")], input=script, text=True,
+                                capture_output=True, check=True)
+        self.assertEqual([json.loads(line) for line in result.stdout.splitlines()], names)
 
     @unittest.skipUnless(shutil.which("tclsh"), "Tcl interpreter is unavailable")
     def test_tcl_names_are_data_and_do_not_execute_substitutions(self):

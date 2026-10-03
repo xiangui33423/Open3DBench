@@ -1,80 +1,77 @@
-# 初步方案：金属层共享与 HBT 增量布局
+# 第二版：HBT 重定位与动态金属层共享
 
-本版本实现赛题要求的端到端接口：读取 CTS 后的 DEF 和 SDC、选择共享线网、切分子网、放置新增 HBT，并调用具有逐网金属层限制的 FastRoute，输出 `5_1_grt.odb`。这是可验证的第一版原型。拥塞与线长均使用几何估计，不能据此宣称 TNS、WNS、DRC 或最终得分已经提升。
+本版保留官方四参数入口：CTS 后 DEF/SDC → HBT 与共享网协同优化 → 逐 die 硬层约束 GRT → `5_1_grt.odb`。针对初版只处理 32 条网、保留既有 HBT 落点的限制，新增既有 HBT 坐标下降优化，将共享规模提高到 192 条网，并根据每次共享的实际落点更新需求图。几何目标用于选择方案，实际收益必须通过固定 DRT/DRC/STA 评估；实测记录见 `submission/VALIDATION.md`。
 
-## 1. 共享线网选择
+## 1. 既有 HBT 重定位
 
-将 die 区域划分为默认 32×32 的统计网格。对每个可识别所属 die 的线网，根据 pin 包围盒面积分配 HPWL，构建类似 RUDY 的二维需求图。该图表示相对需求；它没有扣除布线阻塞，也没有计算实际金属层容量。用矩形差分和前缀和建立、查询需求，避免逐网扫描所有网格。
+`hbt_optimizer.py` 根据每颗 HBT 的相连线网建立局部目标：相连线网 HPWL 之和。移除待优化 HBT 的 pin 后，每张 pin 包围盒给出 x、y 方向的两个端点。对所有端点排序，中间两个端点之间形成该轴的凸最优区间，两轴组合为最优矩形。
 
-候选必须满足：
+在当前点、当前点投影到最优矩形的位置、矩形中心与角点附近搜索合法 lattice 空位。每次只接受相连线网总 HPWL 严格下降且至少节省 0.1 μm 的移动，更新占用表和该 HBT 在全部相连线网中的 pin 坐标后再处理下一颗。默认做 2 轮坐标下降、搜索半径 2 个 pitch、最多接受 4,096 次移动。比较落点时先选 HPWL 最小，再选移动距离最短，最后按坐标排序，结果确定。
 
-- 为非 special 的 SIGNAL 网，且 pin 数为 2–16。
-- 所有 pin 位于同一 die，只有一个 OUTPUT driver，其余为 INPUT。
-- 不含 HBT 或 package pin，不修改既有 `_BOT`/`_TOP` 子网或已经切分的 MLS 家族。
-- HPWL 至少 40 μm，且 pin 可以形成两个较紧凑的空间组。
+保护任何接触 CLOCK、非 SIGNAL、special 或封装引脚网的 HBT。HBT master 和连接保持不变，不改变非 HBT 元件、封装引脚或其连接。公开输入中的既有 HBT 为 COVER，应用移动时先改为 PLACED，再设置新位置，最后设为 FIRM；这些状态变化仅作用于允许修改的 HBT。
 
-对 x、y 两个轴分别排序，在该轴最大的 pin 间隙处切分，含 driver 的组作为源端组。两个组内的 HPWL 之和不得超过原网 HPWL 的 35%。两个组的坐标中位数为 HBT 目标位置。
+HBT pin 的位置随移动同步更新，多个 HBT 相连的网使用前一步更新后的坐标。最终几何节省按受影响线网集合计算一次，不重复计算共享线网。这一目标并非 RC 时延模型，也不保证每条相连子网单独变短。
 
-候选评分为：
+## 2. 共享线网选择与动态需求
+
+将 die 区域划分为默认 32×32 的网格。每条同 die 线网按 pin 包围盒分配 HPWL，建立类似 RUDY 的需求图。该图不包含详细布线阻塞和精确金属容量。
+
+候选必须是非 special 的 SIGNAL 网，pin 数为 2–16，只有一个 OUTPUT driver，其他 pin 均为 INPUT，且所有 pin 属于同一 die。不处理 HBT/封装引脚网、既有 `_BOT`/`_TOP` 子网或已有 MLS 家族。原网 HPWL 至少 40 μm。
+
+对 x、y 两轴分别在最大的 pin 间隙处切分，含 driver 的组为源端组。两个组内 HPWL 之和不得超过原网的 35%。初步评分为：
 
 ```text
 score = (source_demand - target_demand) / (1 + source_demand)
         × trunk_length_um - local_group_hpwl_um - hbt_cost_um
 ```
 
-默认 `hbt_cost_um=12.8` 是两个垂直连接的几何惩罚参数，不是 3 Ω/0.6 fF 的时延模型。按评分降序、原网名升序确定处理次序，无随机结果。
+默认 `hbt_cost_um=12.8` 是两次垂直连接的几何惩罚，不能作为 3 Ω/0.6 fF 的时延计算。
 
-## 2. 时序信息的使用与限制
+候选按初始评分降序、原网名升序处理。在准备放置时重新评估当前需求；每次成功共享后，从源 die 减去原网需求，加回两端局部子网，并在另一 die 加入新增主干需求。矩形更新后按需重建前缀和，使后续候选看到已承担的负载；不会一直使用共享前的静态需求图。
 
-已有逐网 slack 时，可设置 `MLS_TIMING_CSV`，文件表头为 `net,slack_ns`，名称必须与原始 DEF 网名一致。默认禁止对 slack 小于 0 ns 的已标注线网进行共享。未知 slack 的线网仍参与几何评分，报告中的 `timing_source` 会明确说明是否有提供 slack。
+已有逐网 slack 可通过 `MLS_TIMING_CSV` 提供，表头为 `net,slack_ns`，名称与原 DEF 一致。默认禁止已标注且 slack 小于 0 ns 的网进行共享。未知 slack 的网仍参与几何评分，报告明确记录 `timing_source`。本版尚未自动提取 OpenSTA 逐网 slack，也没有布线后的时序反馈优化。
 
-当前版本没有自动从 OpenSTA 提取逐网时序裕量，没有基于 HBT RC 预测共享后的时延，也没有执行布线后的时序反馈。这部分是后续提高得分的主要工作。正式 TNS/WNS 必须由固定评估器测量。
+## 3. 两颗新 HBT 联合放置
 
-## 3. HBT 布局
+保留输入 HBT 中心的 6.4 μm lattice 余数，所有新旧 HBT 均满足制造网格、die 边界和保守方形间距：任意两点必须满足 `|dx| >= pitch` 或 `|dy| >= pitch`。
 
-保留已有 HBT 位置。根据输入 HBT 的中心坐标推导 6.4 μm lattice 的余数；新增 HBT 使用相同的 DEF origin 余数，满足正式评估器的固定 pitch-grid 要求。位置同时对齐制造网格，整个 HBT master 位于 die 内。
+对两个 pin 组，分别在坐标中位数和朝向另一组的包围盒投影位置周围搜索合法点。组合两端候选，直接最小化以下完整链路的 HPWL：
 
-在目标位置周围默认 ±8 个 pitch 范围内枚举站点，按曼哈顿距离、x/y 索引排序，选择最近的合法站点。空间哈希检查已有与新增 HBT。任意两个 HBT 必须满足 `|dx| >= pitch` 或 `|dy| >= pitch`，采用保守的方形间距避免只检查欧氏距离而遗漏 cut-spacing 冲突。
+```text
+HPWL(source group + HBT0) + Manhattan(HBT0, HBT1)
+    + HPWL(sink group + HBT1)
+```
 
-新增数量上限为 64，最多选择 32 条线网，并限制总 HBT 数在保守估计容量的 30% 内。保守容量为 `floor(die_width/pitch) × floor(die_height/pitch)`；固定评估器可能按原网格余数算出略大的容量，原型仍保留较严格的预算。若已有 HBT 已超过预算，本版本不增加 HBT。
+这利用了 pin 包围盒内部的平坦最优区间，减少两端各自选最近站点产生的回头绕路。找不到两个相互合法的站点时放弃候选，不输出残缺家族。配置搜索半径为 0 时只检查原目标的最近网格点。
 
-放置后重新估计两端局部线段与另一 die 的主干 HPWL；若估计总线长超过原网的 130%，或扣除新增绕路后评分低于阈值，则放弃此候选。找不到合法站点时也保留原网。
+默认最多新增 384 颗 HBT、共享 192 条网，为初版共享规模的 6 倍；总 HBT 数仍限制在保守几何容量的 30% 以内。容量为 `floor(die_width/pitch) × floor(die_height/pitch)`。固定检查器按输入 lattice 计算，可能给出稍大容量；本版保留更严格预算，不消耗超额 HBT。
 
-## 4. 子网连接
+放置后若估计总线长超过原网的 130%，或扣除绕路后的评分低于阈值，就保留原网。报告记录原始 HPWL、共享链路估计、两 die 当前需求及 optional slack。
 
-以下为底层线网的共享拓扑：
+## 4. 子网与信号方向
+
+底层网使用以下有向拓扑：
 
 ```text
 driver group -- S0 BOT -- HBT_BOTIN -- S1 TOP -- HBT_TOPIN -- S2 BOT -- sink group
 ```
 
-三个子网分别命名为：
+三个子网依次命名为 `<original>__MLS__S0__BOT`、`<original>__MLS__S1__TOP`、`<original>__MLS__S2__BOT`；新增实例名为唯一的 `LS_HBT_<id>`。上层网交换 BOT/TOP 和两种 HBT master 的顺序，使 Liberty 方向与信号方向一致。
 
-```text
-<original>__MLS__S0__BOT
-<original>__MLS__S1__TOP
-<original>__MLS__S2__BOT
-```
+原网中每个逻辑 pin 恰好转移到一个子网，原网删除。每颗新 HBT 的 BOT/TOP pin 分别接到对应 die 的子网。折叠 HBT 后应恢复原网的完整 terminal 集合和连通性。
 
-新增实例命名为唯一的 `LS_HBT_<id>`。源端使用 `HBT_BOTIN`，回到源 die 的连接使用 `HBT_TOPIN`，使 Liberty 的输入输出方向与信号方向一致。对于上层线网，BOT/TOP 和两个 master 的顺序互换。
+## 5. 布线与运行开销
 
-原网中的每个逻辑 pin 恰好转移到一个子网。原网删除；每个 HBT 的 BOT/TOP pin 分别连接对应 die 的子网。折叠两个 HBT 后应恢复原网的完整 terminal 集合。
+准备步骤先应用全部既有 HBT 重定位，再切分共享网和创建新 HBT。底层路由始终限制在 `metal2–metal10`，上层限制在 `metal11–metal20`，并对每条网应用 `set_net_routing_layers` 硬约束。两次路由使用同一份准备后网表与布局，合并 guide 后执行层归属、pin 覆盖和连通性检查。默认 FastRoute 拥塞迭代为 1 次（初版为 2 次）；固定评估器的详细布线仍为 `-droute_end_iter 2`，没有减少评测迭代。通过 `GLOBAL_ROUTE_ARGS` 可切回 2 次全局迭代。此选择降低入口耗时，并在 bp_fe 实测改善 M2 DRC，时序存在小幅回退，详见验证记录。
 
-## 5. 全局布线
+默认使用同一 OpenROAD 进程执行两次 die 局部路由，借助 `read_guides` 清空已排队的网；临时 special 标记由 `try/finally` 恢复。底层 guide 保存后清理暂存 guide，使上层输出仅含上层网。`GRT_PROCESS_MODE=isolated` 可切回初版独立进程流程用于对照。最终恢复路由前记录的 TRACKS 与每条网的 signal type，导入合并 guide 后恢复层容量调整字段。这样避免 `make_tracks` 的重复网格和 GRT 的时钟类型标记留在提交结果中。
 
-通过现有 `GRT_PREPARE_TCL` 接口在同一个 OpenDB 中应用一次修改。流程保存共享的 `4_grt_input.odb/.def`，让底层、上层和最终合并进程使用同一份网表与布局。
+提交入口将层约束能力检查合并到 DEF 读取进程，并记录每个进程阶段的耗时。准备阶段用缓存减少重复 die 分类，对普通网名采用 JSON 编码快速路径；控制字符仍完整转义。HBT 优化只为实际包含 HBT 的网复制 pin 数据，其他网保持只读，避免大用例全量深拷贝。最终 ODB 必须为当前运行新生成的文件，并由 OpenROAD 重新打开验证。详细布线由固定评估器执行，运行时间比较使用提交入口耗时，不使用评估器包含 DRT 的墙时。
 
-底层限制在 `metal2–metal10`，上层限制在 `metal11–metal20`，并通过 `set_net_routing_layers` 对每条网强制限制。两次布线的 guide 合并后进行 layer ownership、pin 覆盖和连通性检查，再导入最终 ODB。未使用支持这些限制的 OpenROAD 时，提交入口会报错，要求构建提供的 GRT 源码。残余拥塞采用公开流程的 `-allow_congestion` 交给固定详细布线评估器处理。
+## 6. 验证与消融
 
-## 6. 正确性验证
+Python 检查新旧 HBT 的数量、边界、制造网格、lattice 余数与间距，以及原始 terminal 集合、子网图连通性、命名和信号方向。Tcl 应用后检查所有非 HBT 的 master、位置、方向、placement 状态，以及封装引脚几何与连接。
 
-Python 计划验证检查 terminal 集合、HBT 两端连接、家族图连通性、命名、数量预算、die 边界、制造网格与间距。Tcl 应用后检查所有非 HBT 元件的 master、位置、方向和状态，以及 package pin 的几何与连接。提交入口确认最终文件为本次运行新生成的有效 ODB，并再次用 OpenROAD 打开。
+使用固定检查器验证 canonical DEF/guide。全部公开用例的准备阶段检查与完整 GRT/DRT/STA 分开记录；几何检查通过不能替代正式评测。
 
-最终合法性应另外使用镜像中的 canonical snapshot 和 `validate_submission.py` 检查。完整评测还需固定 DRT/DRC/STA；源码检查、单元测试或 GRT 输出都不能替代这一步。
-
-## 7. 后续工作
-
-- 自动获取逐网 slack 和实际拥塞图，建立共享前后 RC 时延预测。
-- 增加多分支的子网切分、HBT 协同重定位和布线反馈。
-- 在 8 个公开用例上测量正式指标，搜索参数并保留逐次实验结果。
-- 用独立用例检查泛化，避免依赖公开 case 名称。
+`relocation_enabled=false` 可关闭既有 HBT 重定位；`max_new_hbts=0` 可运行仅重定位方案。`dynamic_demand` 和 `joint_site_placement` 分别控制需求更新与联合落点选择。`MLS_ENABLE=0` 则关闭所有准备修改，提供相同提交接口的布线基线。这些开关用于消融和同环境比较，不依赖公开 case 名称。

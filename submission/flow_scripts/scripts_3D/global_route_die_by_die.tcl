@@ -113,7 +113,7 @@ proc route_pass_subprocess {net_list_path guide_out min_layer max_layer pass_lab
   set log_file $::env(LOG_DIR)/grt_pass_${pass_label}.log
   set pass_script $::env(SCRIPTS_DIR)/../scripts_3D/global_route_single_pass.tcl
   puts "Die-isolated subprocess pass $pass_label ($min_layer-$max_layer) -> $guide_out"
-  exec [openroad_exe] -exit -no_init $pass_script > $log_file 2>&1
+  exec [openroad_exe] -exit -no_init $pass_script > $log_file 2>@1
 }
 
 proc merge_route_guide_files {output_guide guide_inputs} {
@@ -153,7 +153,7 @@ proc finalize_merged_guides {} {
   file delete -force $success_marker
   puts "Loading merged guides into ODB via subprocess"
   set failed [catch {
-    exec [openroad_exe] -exit -no_init $script > $log_file 2>&1
+    exec [openroad_exe] -exit -no_init $script > $log_file 2>@1
   } message options]
 
   set finalized [expr {

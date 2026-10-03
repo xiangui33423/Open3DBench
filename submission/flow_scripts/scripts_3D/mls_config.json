@@ -1,16 +1,23 @@
 {
   "enabled": true,
   "pitch_um": 6.4,
-  "capacity_fraction": 0.30,
-  "max_new_hbts": 64,
-  "max_shared_nets": 32,
+  "capacity_fraction": 0.3,
+  "max_new_hbts": 384,
+  "max_shared_nets": 192,
   "max_fanout": 16,
   "min_span_um": 40.0,
   "grid_bins": 32,
   "search_radius": 8,
   "max_local_fraction": 0.35,
-  "max_detour_fraction": 0.30,
+  "max_detour_fraction": 0.3,
   "hbt_cost_um": 12.8,
   "min_score": 0.0,
-  "min_slack_ns": 0.0
+  "min_slack_ns": 0.0,
+  "dynamic_demand": true,
+  "joint_site_placement": true,
+  "relocation_enabled": true,
+  "relocation_passes": 2,
+  "relocation_radius": 2,
+  "relocation_max_moves": 4096,
+  "relocation_min_improvement_um": 0.1
 }

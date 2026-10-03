@@ -63,10 +63,16 @@ def main() -> int:
                 if args.evaluate:
                     reports = outputs / case / f'{variant}_reports'
                     eval_log = destination / 'evaluate.log'
+                    reports.mkdir(parents=True, exist_ok=True)
+                    # A failed run must not report metrics from an older run.
+                    (reports / 'metrics.json').unlink(missing_ok=True)
                     with eval_log.open('w') as stream:
                         evaluation = subprocess.run([args.contest_exe, 'evaluate', case, str(inputs), str(destination), str(reports)], env=env, stdout=stream, stderr=subprocess.STDOUT)
                     record['evaluation_exit_code'] = evaluation.returncode
-                    record['metrics'] = load_json(reports / 'metrics.json')
+                    record['metrics'] = load_json(reports / 'metrics.json') if evaluation.returncode == 0 else {}
+                    if evaluation.returncode == 0 and not record['metrics']:
+                        record['evaluation_error'] = 'Evaluator succeeded without fresh metrics.json'
+                        failed = True
                     record['evaluation_log'] = str(eval_log)
                     failed |= evaluation.returncode != 0
             else:

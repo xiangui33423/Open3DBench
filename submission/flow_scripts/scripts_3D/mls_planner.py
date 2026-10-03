@@ -21,8 +21,8 @@ DEFAULT_CONFIG = {
     "enabled": True,
     "pitch_um": 6.4,
     "capacity_fraction": 0.30,
-    "max_new_hbts": 64,
-    "max_shared_nets": 32,
+    "max_new_hbts": 384,
+    "max_shared_nets": 192,
     "max_fanout": 16,
     "min_span_um": 40.0,
     "grid_bins": 32,
@@ -32,6 +32,13 @@ DEFAULT_CONFIG = {
     "hbt_cost_um": 12.8,
     "min_score": 0.0,
     "min_slack_ns": 0.0,
+    "dynamic_demand": True,
+    "joint_site_placement": True,
+    "relocation_enabled": True,
+    "relocation_passes": 2,
+    "relocation_radius": 2,
+    "relocation_max_moves": 4096,
+    "relocation_min_improvement_um": 0.1,
 }
 
 
@@ -61,8 +68,9 @@ def config_values(overrides=None):
         if unknown:
             raise ValueError(f"Unknown MLS configuration keys: {sorted(unknown)}")
         values.update(overrides)
-    if not isinstance(values["enabled"], bool):
-        raise ValueError("enabled must be a JSON boolean")
+    for key in ("enabled", "dynamic_demand", "joint_site_placement", "relocation_enabled"):
+        if not isinstance(values[key], bool):
+            raise ValueError(f"{key} must be a JSON boolean")
     for key in ("pitch_um", "min_span_um"):
         if not math.isfinite(values[key]) or values[key] <= 0:
             raise ValueError(f"{key} must be positive and finite")
@@ -71,7 +79,8 @@ def config_values(overrides=None):
         raise ValueError("pitch_um must match the contest's fixed 6.4 um lattice")
     if not 0 <= values["capacity_fraction"] <= 0.30:
         raise ValueError("capacity_fraction must be in [0, 0.30]")
-    for key in ("max_new_hbts", "max_shared_nets", "search_radius"):
+    for key in ("max_new_hbts", "max_shared_nets", "search_radius",
+                "relocation_passes", "relocation_radius", "relocation_max_moves"):
         if not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 0:
             raise ValueError(f"{key} must be a nonnegative integer")
     for key in ("grid_bins", "max_fanout"):
@@ -80,9 +89,11 @@ def config_values(overrides=None):
     for key in ("max_local_fraction", "max_detour_fraction"):
         if not 0 <= values[key] <= 1:
             raise ValueError(f"{key} must be in [0, 1]")
-    for key in ("hbt_cost_um", "min_score", "min_slack_ns"):
+    for key in ("hbt_cost_um", "min_score", "min_slack_ns", "relocation_min_improvement_um"):
         if not math.isfinite(values[key]):
             raise ValueError(f"{key} must be finite")
+    if values["relocation_min_improvement_um"] < 0:
+        raise ValueError("relocation_min_improvement_um must be nonnegative")
     if values["hbt_cost_um"] < 0:
         raise ValueError("hbt_cost_um must be nonnegative")
     return values
@@ -114,6 +125,8 @@ class DemandGrid:
             grid[iy1 + 1][ix0] -= weight
             grid[iy1 + 1][ix1 + 1] += weight
         self.prefix = {}
+        self.values = {}
+        self.dirty = set()
         for die, grid in diff.items():
             prefix = [[0.0] * (bins + 1) for _ in range(bins + 1)]
             for y in range(bins):
@@ -124,6 +137,7 @@ class DemandGrid:
                     prefix[y + 1][x + 1] = (grid[y][x] + prefix[y][x + 1]
                                              + prefix[y + 1][x] - prefix[y][x])
             self.prefix[die] = prefix
+            self.values[die] = [row[:bins] for row in grid[:bins]]
 
     def indices(self, bounds):
         xl, yl, xh, yh = bounds
@@ -132,7 +146,27 @@ class DemandGrid:
         return (clamp((xl - area[0]) / self.dx), clamp((yl - area[1]) / self.dy),
                 clamp((xh - area[0]) / self.dx), clamp((yh - area[1]) / self.dy))
 
+    def adjust(self, die, pins, amount, dbu):
+        """Replace demand after a committed split so the target cannot overfill."""
+        x0, y0, x1, y1 = self.indices(bbox(pins))
+        weight = amount * hpwl(pins) / dbu / ((x1 - x0 + 1) * (y1 - y0 + 1))
+        cells = self.values[die]
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                cells[y][x] += weight
+        self.dirty.add(die)
+
     def mean(self, die, bounds):
+        if die in self.dirty:
+            cells, n = self.values[die], self.bins
+            prefix = [[0.0] * (n + 1) for _ in range(n + 1)]
+            for y in range(n):
+                row_sum = 0.0
+                for x in range(n):
+                    row_sum += cells[y][x]
+                    prefix[y + 1][x + 1] = prefix[y][x + 1] + row_sum
+            self.prefix[die] = prefix
+            self.dirty.remove(die)
         x0, y0, x1, y1 = self.indices(bounds)
         p = self.prefix[die]
         total = p[y1 + 1][x1 + 1] - p[y0][x1 + 1] - p[y1 + 1][x0] + p[y0][x0]
@@ -179,9 +213,9 @@ class HbtSites:
         return all(abs(x - px) >= self.pitch or abs(y - py) >= self.pitch
                    for px, py in nearby)
 
-    def nearest(self, target, radius, extra=()):
+    def nearby(self, target, radius, extra=(), limit=8):
         if not self.nx or not self.ny:
-            return None
+            return []
         ix = max(0, min(self.nx - 1, round((target[0] - self.x0) / self.step)))
         iy = max(0, min(self.ny - 1, round((target[1] - self.y0) / self.step)))
         candidates = []
@@ -189,10 +223,43 @@ class HbtSites:
             for gy in range(max(0, iy - radius), min(self.ny, iy + radius + 1)):
                 point = (self.x0 + gx * self.step, self.y0 + gy * self.step)
                 candidates.append((distance(point, target), gx, gy, point))
+        available = []
         for _, _, _, point in sorted(candidates):
             if self.legal(point, extra):
-                return point
-        return None
+                available.append(point)
+                if len(available) >= limit:
+                    break
+        return available
+
+    def nearest(self, target, radius, extra=()):
+        points = self.nearby(target, radius, extra, limit=1)
+        return points[0] if points else None
+
+
+def place_pair(sites, a, b, pa, pb, radius, joint):
+    if not joint or radius == 0:
+        p0 = sites.nearest(pa, radius)
+        p1 = sites.nearest(pb, radius, [p0]) if p0 is not None else None
+        return p0, p1
+    # A bbox's interior is a flat optimum for HPWL. Search the corner facing
+    # the other cluster as well as the median, then optimize the complete chain.
+    def proposals(pins, own, other):
+        xl, yl, xh, yh = bbox(pins)
+        projected = (min(xh, max(xl, other[0])), min(yh, max(yl, other[1])))
+        return sorted(set(sites.nearby(own, radius) + sites.nearby(projected, radius)))
+    first, second = proposals(a, pa, pb), proposals(b, pb, pa)
+    options = []
+    for p0 in first:
+        local_a = hpwl(a + [{"x": p0[0], "y": p0[1]}])
+        for p1 in second:
+            if not sites.legal(p1, [p0]):
+                continue
+            cost = local_a + distance(p0, p1) + hpwl(b + [{"x": p1[0], "y": p1[1]}])
+            options.append((cost, distance(p0, pa) + distance(p1, pb), p0, p1))
+    if not options:
+        return None, None
+    _, _, p0, p1 = min(options)
+    return p0, p1
 
 
 def candidate(net, config, dbu, demand):
@@ -248,6 +315,15 @@ def candidate(net, config, dbu, demand):
 
 def plan_design(manifest, config=None):
     config = config_values(config)
+    original_manifest = manifest
+    from hbt_optimizer import optimize_hbts
+    manifest, relocations, relocation_stats = optimize_hbts(manifest, {
+        "enabled": config["enabled"] and config["relocation_enabled"],
+        "passes": config["relocation_passes"],
+        "search_radius": config["relocation_radius"],
+        "max_moves": config["relocation_max_moves"],
+        "min_improvement_um": config["relocation_min_improvement_um"],
+    })
     dbu = int(manifest["dbu_per_micron"])
     grid = int(manifest.get("manufacturing_grid", 1))
     area = list(map(int, manifest["die_area"]))
@@ -266,8 +342,11 @@ def plan_design(manifest, config=None):
              "new_hbt_budget": budget, "selected_nets": 0, "new_hbts": 0,
              "timing_source": "provided_slack" if any("slack_ns" in n for n in manifest["nets"])
                               else "geometry_only", "skipped": {}}
-    result = {"version": 1, "config": config, "selected": [], "stats": stats}
+    stats["relocation"] = relocation_stats
+    result = {"version": 2, "config": config, "selected": [],
+              "relocations": relocations, "stats": stats}
     if not config["enabled"] or budget < 2 or config["max_shared_nets"] == 0:
+        validate_plan(original_manifest, result)
         return result
     demand = DemandGrid(area, config["grid_bins"], manifest["nets"], dbu)
     sites = HbtSites(area, size, pitch, grid, existing)
@@ -288,8 +367,14 @@ def plan_design(manifest, config=None):
         if len(result["selected"]) >= config["max_shared_nets"] or stats["new_hbts"] + 2 > budget:
             break
         score, axis, a, b, pa, pb, span, die, source_demand, target_demand = choice
-        p0 = sites.nearest(pa, config["search_radius"])
-        p1 = sites.nearest(pb, config["search_radius"], [p0]) if p0 is not None else None
+        if config["dynamic_demand"]:
+            choice, reason = candidate(net, config, dbu, demand)
+            if choice is None:
+                skipped["updated_" + reason] += 1
+                continue
+            score, axis, a, b, pa, pb, span, die, source_demand, target_demand = choice
+        p0, p1 = place_pair(sites, a, b, pa, pb, config["search_radius"],
+                            config["joint_site_placement"])
         if p0 is None or p1 is None:
             skipped["no_legal_site"] += 1
             continue
@@ -337,10 +422,16 @@ def plan_design(manifest, config=None):
                                    "slack_ns": net.get("slack_ns")})
         sites.reserve(p0)
         sites.reserve(p1)
+        if config["dynamic_demand"]:
+            point0, point1 = {"x": p0[0], "y": p0[1]}, {"x": p1[0], "y": p1[1]}
+            demand.adjust(die, net["pins"], -1, dbu)
+            demand.adjust(die, a + [point0], 1, dbu)
+            demand.adjust(die, b + [point1], 1, dbu)
+            demand.adjust("upper" if die == "bottom" else "bottom", [point0, point1], 1, dbu)
         stats["new_hbts"] += 2
     stats["selected_nets"] = len(result["selected"])
     stats["skipped"] = dict(sorted(skipped.items()))
-    validate_plan(manifest, result)
+    validate_plan(original_manifest, result)
     return result
 
 
@@ -348,9 +439,37 @@ def validate_plan(manifest, plan):
     """Verify pin equivalence, subnet connectivity, geometry, and HBT budgets."""
     originals = {n["name"]: n for n in manifest["nets"]}
     pitch = math.ceil(plan["config"]["pitch_um"] * manifest["dbu_per_micron"])
-    existing = manifest.get("hbts", [])
+    reference = manifest.get("hbts", [])
     sites = HbtSites(manifest["die_area"], manifest["hbt_master_size"], pitch,
-                     manifest.get("manufacturing_grid", 1), existing)
+                     manifest.get("manufacturing_grid", 1), reference)
+    moves = {h["name"]: h for h in plan.get("relocations", [])}
+    if len(moves) != len(plan.get("relocations", [])) or set(moves) - {h["name"] for h in reference}:
+        raise ValueError("Unknown or duplicate relocated HBT")
+    existing = []
+    for h in reference:
+        moved = moves.get(h["name"], h)
+        x, y = moved["x"], moved["y"]
+        if h["name"] in moves:
+            if (moved["before_x"], moved["before_y"]) != (h["x"], h["y"]):
+                raise ValueError("Relocation reference position changed")
+            if (x, y) != (moved["origin_x"] + sites.size[0] // 2,
+                          moved["origin_y"] + sites.size[1] // 2):
+                raise ValueError("Relocation center and origin disagree")
+        if (x - sites.x0) % pitch or (y - sites.y0) % pitch:
+            raise ValueError("Relocated HBT off input lattice")
+        ox, oy = x - sites.size[0] // 2, y - sites.size[1] // 2
+        if not (sites.area[0] <= ox <= sites.area[2] - sites.size[0]
+                and sites.area[1] <= oy <= sites.area[3] - sites.size[1]):
+            raise ValueError("Relocated HBT outside die")
+        if ox % manifest.get("manufacturing_grid", 1) or oy % manifest.get("manufacturing_grid", 1):
+            raise ValueError("Relocated HBT off manufacturing grid")
+        existing.append({"name": h["name"], "x": x, "y": y})
+    sites.occupied.clear()
+    for h in existing:
+        point = h["x"], h["y"]
+        if not sites.legal(point):
+            raise ValueError("Relocated HBT pitch violation")
+        sites.reserve(point)
     identities = {h["name"] for h in existing}
     selected_names = set()
     for entry in plan["selected"]:
@@ -437,6 +556,13 @@ def tcl_word(value):
 def emit_tcl(plan):
     lines = ["# Generated MLS edits; executed inside GRT_PREPARE_TCL.",
              "set mls_block [ord::get_db_block]", "set mls_db [ord::get_db]"]
+    for h in plan.get("relocations", []):
+        lines += [f"set mls_inst [$mls_block findInst {tcl_word(h['name'])}]",
+                  'if {$mls_inst eq "NULL"} {error "Relocated HBT instance missing"}',
+                  "$mls_inst setPlacementStatus PLACED",
+                  "$mls_inst setOrient R0",
+                  f"$mls_inst setOrigin {h['origin_x']} {h['origin_y']}",
+                  "$mls_inst setPlacementStatus FIRM"]
     for entry in plan["selected"]:
         original = tcl_word(entry["original"])
         lines += [f"set mls_old [$mls_block findNet {original}]",
@@ -460,7 +586,7 @@ def emit_tcl(plan):
                           'if {$mls_term eq "NULL"} {error "MLS instance terminal missing"}',
                           "$mls_term disconnect", f"$mls_term connect $mls_s{index}"]
         lines.append("odb::dbNet_destroy $mls_old")
-    lines.append(f'puts "MLS: applied {len(plan["selected"])} sharing nets, {plan["stats"]["new_hbts"]} new HBTs"')
+    lines.append(f'puts "MLS: relocated {len(plan.get("relocations", []))} existing HBTs, applied {len(plan["selected"])} sharing nets, {plan["stats"]["new_hbts"]} new HBTs"')
     return "\n".join(lines) + "\n"
 
 
