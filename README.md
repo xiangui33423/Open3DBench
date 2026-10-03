@@ -62,6 +62,31 @@ Replace `bp_fe` and `baseline` to run another case or keep multiple experiment
 outputs. GRT results are stored under `output/`, and evaluation reports are
 stored under `reports/`.
 
+### Initial MLS submission
+
+An initial metal layer sharing implementation is available in `submission/`.
+It preserves existing placement, splits selected long die-local nets into three
+subnets, and places two new HBTs on the input pitch lattice. It uses geometric
+congestion estimates; optional measured net slack can guard critical nets.
+See [the algorithm description](OpenROAD-GRT/ALGORITHM.md) and
+[the submission instructions](submission/README.md).
+
+Inside the supplied contest image, build and invoke the four-argument interface:
+
+```bash
+python3 submission/package.py
+bash submission/build.sh 32
+bash submission/run.sh \
+  "$INPUT/cases/bp_fe/grt_input" \
+  output/bp_fe/mls_initial \
+  "$INPUT/platforms/nangate45_3D" 32
+```
+
+`python3 submission/package.py` also creates `submission.zip` with `run.sh` at
+its root. Set `MLS_ENABLE=0` to run a comparison baseline using the same entry
+point. Formal scores require the fixed evaluator; producing an ODB alone does
+not establish timing, DRC, or score improvement.
+
 ## 3. Repository and Baseline
 
 ```text

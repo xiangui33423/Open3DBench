@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "pitch_um": 6.4,
+  "capacity_fraction": 0.30,
+  "max_new_hbts": 64,
+  "max_shared_nets": 32,
+  "max_fanout": 16,
+  "min_span_um": 40.0,
+  "grid_bins": 32,
+  "search_radius": 8,
+  "max_local_fraction": 0.35,
+  "max_detour_fraction": 0.30,
+  "hbt_cost_um": 12.8,
+  "min_score": 0.0,
+  "min_slack_ns": 0.0
+}

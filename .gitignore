@@ -9,3 +9,11 @@ reports/
 __pycache__/
 *.pyc
 open3dbench_*input*.tar.gz
+.gitignore
+Open3DBench-offline-20260904/
+submission_sample/
+Open3DBench-offline-20260904.tar.gz
+*.pdf
+submission/test_output/
+submission/.build/
+submission.zip
