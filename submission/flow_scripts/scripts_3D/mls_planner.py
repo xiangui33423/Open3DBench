@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "relocation_enabled": True,
     "relocation_passes": 2,
     "relocation_radius": 2,
-    "relocation_max_moves": 4096,
+    "relocation_max_moves": 65536,
     "relocation_min_improvement_um": 0.1,
 }
 

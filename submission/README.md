@@ -1,4 +1,4 @@
-# 3D-IC 全局绕线第二版提交
+# 3D-IC 全局绕线第三版提交
 
 入口与官方示例一致，线程数必须为 1–32：
 
@@ -20,6 +20,10 @@ python3 submission/run_public_cases.py <input_root> <output_root> --cases bp_fe 
 
 去掉 `--cases` 则运行全部输入。添加 `--evaluate` 可逐次调用官方 `contest evaluate`，结果与日志记录在 `<output_root>/summary.json` 及各 case 目录中。
 
-正式得分应以官方 `contest evaluate` 的合法性、DRC 和时序结果为准。当前原生 OpenROAD 的运行结果不能替代官方评测。
+正式得分应以官方 `contest evaluate` 的合法性、DRC 和时序结果为准。本项目使用官方 `20260914` 容器验证，具体覆盖范围及实测值见 `VALIDATION.md`。
 
-第二版默认共享上限为 192 条网、384 颗新 HBT，既有 HBT 最多做两轮合法重定位。`MLS_CONFIG` 可覆盖默认参数：`relocation_enabled=false` 关闭重定位，`max_new_hbts=0` 只保留重定位；`dynamic_demand` 和 `joint_site_placement` 控制动态需求与联合放置。完整说明见 `ALGORITHM.md`，实测范围和结果见 `VALIDATION.md`。运行记录中的 `stage_seconds` 用于定位入口耗时。默认在同一进程内按硬层约束分别路由两层，全局拥塞迭代为 1 次；`GRT_PROCESS_MODE=isolated` 可切回初版流程。
+默认共享上限为 192 条网、384 颗新 HBT，既有 HBT 做两轮合法重定位，移动次数上限由第二版的 4,096 提高为 65,536，避免大设计在第一轮提前停止。`MLS_CONFIG` 可覆盖默认参数：`relocation_enabled=false` 关闭重定位，`max_new_hbts=0` 只保留重定位；`dynamic_demand` 和 `joint_site_placement` 控制动态需求与联合放置。完整说明见 `ALGORITHM.md`。
+
+第三版直接从 OpenDB 导出规划器清单，流式检查 guide，并复用经过输入与内容 SHA 校验的完整网分类。两次非空 die 路由之间使用原生队列清理，保留每网硬层约束和最终完整 guide 导入。`MLS_MANIFEST_EXPORTER=tcl`、`GRT_PASS_RESET=legacy` 可分别恢复旧实现供对照；旧兼容二进制会自动回退，空 die 保持原有保护流程。
+
+运行记录中的 `stage_seconds`、`detail_seconds` 用于定位耗时，`grt_pass_reset` 记录实际使用的交接实现。`grt.prepare` 包含 `mls.*` 子项，细项不能全部相加。默认同一进程按硬层约束分别路由两层，全局拥塞迭代为 1 次；`GRT_PROCESS_MODE=isolated` 可切回初版流程。

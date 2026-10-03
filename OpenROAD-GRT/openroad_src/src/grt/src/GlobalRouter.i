@@ -213,6 +213,18 @@ clear_net_routing_layers()
 }
 
 void
+export_mls_manifest(const char* file_name)
+{
+  getGlobalRouter()->exportMlsManifest(file_name);
+}
+
+void
+reset_die_routing_pass()
+{
+  getGlobalRouter()->resetDieRoutingPass();
+}
+
+void
 highlight_net_route(odb::dbNet *net, bool show_pin_locations)
 {
   if (!gui::Gui::enabled()) {

@@ -165,6 +165,10 @@ class GlobalRouter
   void setInfiniteCapacity(bool infinite_capacity);
 
   // flow functions
+  // Export planner geometry directly from OpenDB without per-pin Tcl wrappers.
+  void exportMlsManifest(const char* file_name);
+  // Between two nonempty die-local globalRoute calls; keep hard layer ranges.
+  void resetDieRoutingPass();
   void readGuides(const char* file_name);
   void loadGuidesFromDB();
   void updateNetResources(Net* net, bool release_resources);

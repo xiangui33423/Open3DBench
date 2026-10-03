@@ -65,6 +65,213 @@ namespace grt {
 using boost::icl::interval;
 using utl::GRT;
 
+namespace {
+
+// Match Tcl's integer division, including pins outside the positive quadrant.
+int64_t mlsFloorDivide(int64_t value, int64_t divisor)
+{
+  const int64_t quotient = value / divisor;
+  return quotient - (value % divisor < 0 ? 1 : 0);
+}
+
+void mlsJsonString(std::ostream& out, const std::string& value)
+{
+  static constexpr char hex[] = "0123456789abcdef";
+  out.put('"');
+  for (const unsigned char c : value) {
+    if (c == '"' || c == '\\') {
+      out.put('\\');
+      out.put(c);
+    } else if (c < 32) {
+      out << "\\u00" << hex[c >> 4] << hex[c & 15];
+    } else {
+      out.put(c);
+    }
+  }
+  out.put('"');
+}
+
+bool mlsIsHbt(const std::string& name)
+{
+  return name.rfind("HBT_", 0) == 0 || name.rfind("LS_HBT_", 0) == 0;
+}
+
+// 0 means unspecified, 1 bottom, 2 upper. Instance names take precedence.
+int mlsInstanceDie(odb::dbInst* inst)
+{
+  for (const std::string& name : {inst->getName(), inst->getMaster()->getName()}) {
+    if (name.size() >= 7 && name.compare(name.size() - 7, 7, "_bottom") == 0) {
+      return 1;
+    }
+    if (name.size() >= 6 && name.compare(name.size() - 6, 6, "_upper") == 0) {
+      return 2;
+    }
+  }
+  return 0;
+}
+
+int mlsLayerDie(odb::dbTechLayer* layer)
+{
+  if (layer == nullptr) {
+    return 0;
+  }
+  const std::string name = layer->getName();
+  if (name.size() <= 5 || name.compare(0, 5, "metal") != 0) {
+    return 0;
+  }
+  int number = 0;
+  for (size_t i = 5; i < name.size(); ++i) {
+    if (name[i] < '0' || name[i] > '9') {
+      return 0;
+    }
+    // Only the threshold matters; avoid overflow on arbitrary layer names.
+    number = std::min(11, number * 10 + name[i] - '0');
+  }
+  return number <= 10 ? 1 : 2;
+}
+
+const char* mlsJsonDie(int die)
+{
+  return die == 1 ? "\"bottom\"" : die == 2 ? "\"upper\"" : "null";
+}
+
+}  // namespace
+
+void GlobalRouter::exportMlsManifest(const char* file_name)
+{
+  auto* chip = db_->getChip();
+  auto* block = chip == nullptr ? nullptr : chip->getBlock();
+  auto* master = db_->findMaster("HBT_BOTIN");
+  if (block == nullptr || master == nullptr) {
+    logger_->error(GRT, 720, "MLS manifest requires a design and HBT_BOTIN master.");
+  }
+  std::ofstream out(file_name);
+  if (!out) {
+    logger_->error(GRT, 721, "Cannot open MLS manifest {}.", file_name);
+  }
+  const odb::Rect area = block->getDieArea();
+  out << "{\"dbu_per_micron\":" << block->getDbUnitsPerMicron()
+      << ",\"manufacturing_grid\":"
+      << std::max(1, db_->getTech()->getManufacturingGrid())
+      << ",\"die_area\":[" << area.xMin() << ',' << area.yMin() << ','
+      << area.xMax() << ',' << area.yMax() << "],\"hbt_master_size\":["
+      << master->getWidth() << ',' << master->getHeight() << "],\"hbts\":[\n";
+  bool first = true;
+  std::unordered_map<odb::dbInst*, int> instance_dies;
+  instance_dies.reserve(block->getInsts().size());
+  for (auto* inst : block->getInsts()) {
+    instance_dies.emplace(inst, mlsInstanceDie(inst));
+    const std::string name = inst->getName();
+    if (!mlsIsHbt(name)) {
+      continue;
+    }
+    auto* box = inst->getBBox();
+    if (!first) {
+      out.put(',');
+    }
+    first = false;
+    out << "{\"name\":";
+    mlsJsonString(out, name);
+    out << ",\"x\":" << mlsFloorDivide(int64_t(box->xMin()) + box->xMax(), 2)
+        << ",\"y\":" << mlsFloorDivide(int64_t(box->yMin()) + box->yMax(), 2)
+        << "}\n";
+  }
+  out << "],\"nets\":[\n";
+  first = true;
+  for (auto* net : block->getNets()) {
+    if (!first) {
+      out.put(',');
+    }
+    first = false;
+    out << "{\"name\":";
+    mlsJsonString(out, net->getName());
+    out << ",\"signal_type\":";
+    mlsJsonString(out, net->getSigType().getString());
+    out << ",\"special\":" << (net->isSpecial() ? "true" : "false")
+        << ",\"bterms\":" << (net->getBTerms().empty() ? "false" : "true")
+        << ",\"pins\":[";
+    bool first_pin = true;
+    for (auto* iterm : net->getITerms()) {
+      if (!first_pin) {
+        out.put(',');
+      }
+      first_pin = false;
+      auto* inst = iterm->getInst();
+      const std::string name = inst->getName();
+      const std::string pin = iterm->getMTerm()->getName();
+      const bool hbt = mlsIsHbt(name);
+      int die = instance_dies.at(inst);
+      if (hbt && pin == "BOT") {
+        die = 1;
+      } else if (hbt && pin == "TOP") {
+        die = 2;
+      }
+      int x = 0;
+      int y = 0;
+      if (!iterm->getAvgXY(&x, &y)) {
+        auto* box = inst->getBBox();
+        x = mlsFloorDivide(int64_t(box->xMin()) + box->xMax(), 2);
+        y = mlsFloorDivide(int64_t(box->yMin()) + box->yMax(), 2);
+      }
+      out << "{\"inst\":";
+      mlsJsonString(out, name);
+      out << ",\"pin\":";
+      mlsJsonString(out, pin);
+      out << ",\"x\":" << x << ",\"y\":" << y << ",\"die\":" << mlsJsonDie(die)
+          << ",\"io\":";
+      mlsJsonString(out, iterm->getIoType().getString());
+      out << ",\"hbt\":" << (hbt ? "true" : "false") << '}';
+    }
+    for (auto* bterm : net->getBTerms()) {
+      if (!first_pin) {
+        out.put(',');
+      }
+      first_pin = false;
+      int64_t sx = 0;
+      int64_t sy = 0;
+      int64_t count = 0;
+      int die_mask = 0;
+      for (auto* bpin : bterm->getBPins()) {
+        for (auto* box : bpin->getBoxes()) {
+          sx += mlsFloorDivide(int64_t(box->xMin()) + box->xMax(), 2);
+          sy += mlsFloorDivide(int64_t(box->yMin()) + box->yMax(), 2);
+          ++count;
+          die_mask |= mlsLayerDie(box->getTechLayer());
+        }
+      }
+      out << "{\"inst\":\"PIN\",\"pin\":";
+      mlsJsonString(out, bterm->getName());
+      out << ",\"x\":" << (count ? mlsFloorDivide(sx, count) : 0)
+          << ",\"y\":" << (count ? mlsFloorDivide(sy, count) : 0)
+          << ",\"die\":" << mlsJsonDie(die_mask) << ",\"io\":";
+      mlsJsonString(out, bterm->getIoType().getString());
+      out << ",\"hbt\":false}";
+    }
+    out << "]}\n";
+  }
+  out << "]}\n";
+  out.close();
+  if (!out) {
+    logger_->error(GRT, 722, "Failed writing MLS manifest {}.", file_name);
+  }
+}
+
+void GlobalRouter::resetDieRoutingPass()
+{
+  auto* chip = db_->getChip();
+  auto* block = chip == nullptr ? nullptr : chip->getBlock();
+  if (block == nullptr) {
+    logger_->error(GRT, 723, "Load a design before resetting a die routing pass.");
+  }
+  // globalRoute() clears all transient router models before the next pass.
+  // Only the explicit net queue survives clear(). Reimporting the first
+  // pass's guides just to empty this queue rebuilds models that are discarded.
+  nets_to_route_.clear();
+  for (auto* net : block->getNets()) {
+    net->clearGuides();
+  }
+}
+
 GlobalRouter::GlobalRouter(utl::Logger* logger,
                            utl::CallBackHandler* callback_handler,
                            stt::SteinerTreeBuilder* stt_builder,

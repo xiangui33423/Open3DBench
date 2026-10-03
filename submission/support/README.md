@@ -1,4 +1,28 @@
-# 本地固定评测复现
+# 官方容器与本地评测
+
+真正的官方 Docker 验证使用以下入口，需要当前账号能访问 Docker daemon：
+
+```bash
+python3 submission/support/run_official_container.py --pull
+```
+
+默认使用 `gaocr/3dbench-contest:20260914`。工具保存提交 ZIP 快照及 SHA256，记录并锁定实际镜像 ID，挂载只读项目与独立可写报告目录，从镜像完整源码全新编译，再运行 `bp_fe`、`bp_be` 的基线和优化版入口及官方合法性检查。随后两种 `bp_fe` 候选分别调用原始 `contest evaluate`，核对完整 DRT 两层日志、最终 STA 和 metrics。GRT/评估各 8 线程，最多同时评估两个候选；`--build-threads` 可设置编译并行度。所有记录保存在 `reports/official_container/host-*/`，失败退出非零，不调用原生替代引擎。
+
+第三版原生导出可在官方容器内独立与 Tcl 实现逐字段比较：
+
+```bash
+python3 submission/support/verify_manifest_export.py \
+  --openroad /absolute/path/to/built/openroad \
+  --odb /absolute/path/to/4_cts.odb \
+  --hook submission/flow_scripts/scripts_3D/prepare_mls.tcl \
+  --output /absolute/path/to/export-comparison
+```
+
+该测试首先验证完整真实网表，再加入缺失 pin 几何、负数中心坐标、控制字符、中文名称、不同 die 和多层封装 pin 的实际 OpenDB 边界数据。比较保留每个网及其全部 pin 的顺序。大用例可用 `--skip-fixtures --reference-json` 与同一输入 ODB 先前捕获的 Tcl 清单作流式对照。
+
+`MLS_MANIFEST_EXPORTER=auto` 默认在公开 GRT 含有原生导出命令时使用它；`tcl` 保留旧实现供消融，`native` 强制要求新命令。运行记录新增 `detail_seconds`，分别记录导出、规划、两次路由和校验耗时。其中 `grt.prepare` 包含 `mls.*` 子阶段，这些细分值不应直接全部相加；入口总耗时仍以 `runtime_seconds` 为准。
+
+如需验证用户自带的官方离线版本，可先执行 `docker load -i Open3DBench-offline-20260904/docker/3dbench-contest_20260724.tar.gz`，再添加 `--image gaocr/3dbench-contest:20260724`。工具核对该版本的固定 image ID；两个镜像版本的结果需分别报告。
 
 这些工具用于输入检查、合法性验证和本地原生 DRT/STA 实验。提交算法仍由 `run.sh` 和公开源码 `build.sh` 执行；本地评测指标不代表官方最终成绩。
 
@@ -47,3 +71,8 @@ python3 submission/support/compare_metrics.py \
 `analyze_drt_logs.py --work-root label=/absolute/path/evaluator-work --output stages.json` 分解已有 DRT 日志的 CPU/墙时；`analyze_drc.py --report label=/absolute/path/report --compare baseline:candidate --output drc.json` 汇总最终 DRC 的层和类型。后者可添加 `--selected-plan`、`--placement-def`、`--relocation-reference-plan`，核对共享原网、HBT 位置和消融实验的旧 HBT 移动是否一致。
 
 在本地 `bp_fe`、8 线程、最终迭代 2 下，每候选约 19–20 分钟：bottom 约 11 分钟，upper 约 4.5 分钟，固定 post-hook 约 3 分钟，最终 STA 约 30 秒。具体时间以实验日志为准。
+
+
+第三版真实官方 20260914 实验使用 `run_official_experiments.py`、`verify_official_experiments.py` 和 `capture_official_build_reference.py`。公开二进制只在九个 overlay 文件 SHA 全部一致时复用；增量构建必须提供已验证完整构建的父报告 SHA 和子构建的真实源码摘要。
+
+官方质量指标复用代码已移除：历史报告缺少评测当时完整平台文件摘要。`--reuse-quality` 和旧复用 plan 都拒绝。最终质量必须来自实际官方 DRT2/STA；本页前面的 `--reuse-report` 仅属于旧版本地原生实验工具，不能作为官方容器验证证据。

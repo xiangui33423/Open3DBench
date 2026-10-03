@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import re
+import argparse
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 from die_net_common import (
     classify_all_nets,
+    iter_nets,
     parse_inst_die_map,
-    parse_nets,
     parse_pin_die_map,
+    read_classification_cache,
 )
 
 BOTTOM_MAX = 10
@@ -25,10 +27,17 @@ def parse_layer(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def classify_net_from_def(def_path: Path) -> dict[str, str]:
+def classify_net_from_def(
+    def_path: Path,
+    classification_cache: Path | None = None,
+) -> dict[str, str]:
     """Return net_name -> '2d_bottom' | '2d_upper' | '3d' | 'unknown'."""
+    if classification_cache is not None:
+        cached = read_classification_cache(classification_cache, def_path)
+        if cached is not None:
+            return cached
     return classify_all_nets(
-        parse_nets(def_path),
+        iter_nets(def_path),
         parse_inst_die_map(def_path),
         parse_pin_die_map(def_path),
     )
@@ -71,8 +80,9 @@ def layer_allowed_plain_2d(cls: str, layer: int) -> bool:
 def check(
     guide_path: Path,
     def_path: Path,
+    classification_cache: Path | None = None,
 ) -> tuple[dict[str, str], dict[str, list[int]]]:
-    net_class = classify_net_from_def(def_path)
+    net_class = classify_net_from_def(def_path, classification_cache)
     violations: dict[str, list[int]] = defaultdict(list)
 
     for net, layer in parse_guide(guide_path):
@@ -84,13 +94,12 @@ def check(
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <route.guide> <design.def>", file=sys.stderr)
-        sys.exit(2)
-
-    guide_path = Path(sys.argv[1])
-    def_path = Path(sys.argv[2])
-    net_class, violations = check(guide_path, def_path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("guide_path", type=Path)
+    parser.add_argument("def_path", type=Path)
+    parser.add_argument("--classification-cache", type=Path)
+    args = parser.parse_args()
+    net_class, violations = check(args.guide_path, args.def_path, args.classification_cache)
 
     n2b = sum(1 for c in net_class.values() if c == "2d_bottom")
     n2u = sum(1 for c in net_class.values() if c == "2d_upper")

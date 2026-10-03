@@ -171,6 +171,15 @@ namespace eval mls_prepare {
   }
 
   proc export_manifest {path db block bottom_master} {
+    # Keep the portable exporter for independently checking the native path
+    # and for binaries built before the optional command was introduced.
+    set exporter [expr {[info exists ::env(MLS_MANIFEST_EXPORTER)] ? $::env(MLS_MANIFEST_EXPORTER) : "auto"}]
+    if {$exporter ni {auto native tcl}} { error "Invalid MLS_MANIFEST_EXPORTER '$exporter'" }
+    if {$exporter ne "tcl" && [info commands ::grt::export_mls_manifest] ne ""} {
+      ::grt::export_mls_manifest $path
+      return
+    }
+    if {$exporter eq "native"} { error "Native MLS manifest exporter is unavailable" }
     variable die_cache
     set die_cache [dict create]
     set dbu [$block getDbUnitsPerMicron]
@@ -220,12 +229,16 @@ namespace eval mls_prepare {
         [$bot_master getHeight] != [$top_master getHeight]} {
       error "MLS HBT masters must have equal dimensions"
     }
+    set stage_start [clock milliseconds]
     set original_instances [inst_snapshot $block]
     set original_bterms [bterm_snapshot $block]
+    puts "MLS_STAGE snapshot_before_ms=[expr {[clock milliseconds] - $stage_start}]"
     set manifest $::env(RESULTS_DIR)/mls_manifest.json
     set plan $::env(RESULTS_DIR)/mls_plan.json
     set apply_tcl $::env(RESULTS_DIR)/mls_apply.tcl
+    set stage_start [clock milliseconds]
     export_manifest $manifest $db $block $bot_master
+    puts "MLS_STAGE export_manifest_ms=[expr {[clock milliseconds] - $stage_start}]"
     set command [list python3 $script_dir/mls_planner.py --manifest $manifest \
       --plan $plan --apply-tcl $apply_tcl]
     if {[info exists ::env(MLS_CONFIG)] && $::env(MLS_CONFIG) ne ""} {
@@ -235,12 +248,18 @@ namespace eval mls_prepare {
       lappend command --timing-csv [file normalize $::env(MLS_TIMING_CSV)]
     }
     puts "MLS geometry manifest: $manifest"
+    set stage_start [clock milliseconds]
     puts [exec {*}$command 2>@1]
+    puts "MLS_STAGE plan_ms=[expr {[clock milliseconds] - $stage_start}]"
     # Execute at global scope so the emitted script uses the usual OpenROAD
     # Tcl context, while all integration helpers remain in this namespace.
+    set stage_start [clock milliseconds]
     uplevel #0 [list source $apply_tcl]
+    puts "MLS_STAGE apply_ms=[expr {[clock milliseconds] - $stage_start}]"
+    set stage_start [clock milliseconds]
     check_snapshot $original_instances [inst_snapshot $block] "non-HBT components"
     check_snapshot $original_bterms [bterm_snapshot $block] "package pins"
+    puts "MLS_STAGE snapshot_after_ms=[expr {[clock milliseconds] - $stage_start}]"
     puts "MLS preparation preserved [dict size $original_instances] components and [dict size $original_bterms] package pins; plan: $plan"
   }
 }

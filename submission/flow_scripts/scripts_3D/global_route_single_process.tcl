@@ -1,16 +1,26 @@
 # Two-pass GRT in one OpenROAD process. Both passes keep their
-# original die-only layer interval. read_guides resets the queued net subset;
-# temporary net flags limit that reset to bottom pins and are restored at once.
+# original die-only layer interval. A native reset clears the queued subset;
+# the portable fallback uses read_guides with temporary bottom-only net flags.
 utl::set_metrics_stage "globalroute__fused"
 source $::env(SCRIPTS_DIR)/load.tcl
+proc fused_stage {name script} {
+  set started [clock milliseconds]
+  set result [uplevel 1 $script]
+  puts "GRT_STAGE ${name}_ms=[expr {[clock milliseconds] - $started}]"
+  return $result
+}
+set fused_started [clock milliseconds]
 load_design 4_cts.odb 4_cts.sdc "Starting fused die-by-die global routing"
+puts "GRT_STAGE load_design_ms=[expr {[clock milliseconds] - $fused_started}]"
 set fused_script_dir [file dirname [file normalize [info script]]]
 set fused_input_def $::env(RESULTS_DIR)/4_1_cts.def
 if {[info exists ::env(GRT_PREPARE_TCL)] && $::env(GRT_PREPARE_TCL) ne ""} {
-  source [file normalize $::env(GRT_PREPARE_TCL)]
+  fused_stage prepare {source [file normalize $::env(GRT_PREPARE_TCL)]}
   set fused_input_def $::env(RESULTS_DIR)/4_grt_input.def
-  write_db $::env(RESULTS_DIR)/4_grt_input.odb
-  write_def $fused_input_def
+  fused_stage write_prepared {
+    write_db $::env(RESULTS_DIR)/4_grt_input.odb
+    write_def $fused_input_def
+  }
 }
 set ::env(GRT_INPUT_DEF) $fused_input_def
 # Keep the pre-GRT metadata used by an isolated finalizer. make_tracks appends
@@ -49,7 +59,11 @@ set fused_adjustment [expr {[info exists ::env(GLOBAL_ROUTING_LAYER_ADJUSTMENT)]
 set fused_args [expr {[info exists ::env(GLOBAL_ROUTE_ARGS)] ? $::env(GLOBAL_ROUTE_ARGS) : \
   {-allow_congestion -congestion_iterations 1 -congestion_report_iter_step 5 -verbose}}]
 set fused_list_dir $::env(RESULTS_DIR)/die_net_lists
-exec python3 $fused_script_dir/export_die_net_lists.py $fused_input_def $fused_list_dir
+set fused_classification_cache $::env(RESULTS_DIR)/.net_classification.json
+fused_stage classify_nets {
+  exec python3 $fused_script_dir/export_die_net_lists.py $fused_input_def $fused_list_dir \
+    --classification-cache $fused_classification_cache
+}
 set fused_block [ord::get_db_block]
 proc fused_read_nets {path} {
   set fp [open $path r]
@@ -87,43 +101,73 @@ set fused_bottom [fused_read_nets $fused_list_dir/bottom_2d.txt]
 set fused_upper [fused_read_nets $fused_list_dir/upper_2d.txt]
 set fused_bottom_guide $::env(RESULTS_DIR)/route_bottom.guide
 set fused_upper_guide $::env(RESULTS_DIR)/route_upper.guide
-fused_route_pass $fused_bottom $fused_bot_min $fused_bot_max \
-  $fused_bottom_guide $::env(REPORTS_DIR)/congestion_bottom.rpt
+fused_stage route_bottom {
+  fused_route_pass $fused_bottom $fused_bot_min $fused_bot_max \
+    $fused_bottom_guide $::env(REPORTS_DIR)/congestion_bottom.rpt
+}
+set fused_started [clock milliseconds]
 
-# read_guides clears nets_to_route_ without reloading the design or Liberty.
-# Only bottom nets may rebuild pin models on the current bottom-only grid.
-# The other nets' original special flags are restored before upper routing.
-set fused_bottom_set [dict create]
-foreach name $fused_bottom { dict set fused_bottom_set $name 1 }
-set fused_temporary_flags {}
-foreach net [$fused_block getNets] {
-  if {![dict exists $fused_bottom_set [$net getName]] && ![$net isSpecial]} {
-    lappend fused_temporary_flags $net
-    $net setSpecial
+# For two nonempty passes the next global_route reconstructs router models
+# and GCELL state. Clear only the queued subset and DB guides at this boundary.
+# Keep the legacy path for older binaries and either empty-die edge case.
+set fused_reset_mode [expr {[info exists ::env(GRT_PASS_RESET)] ? $::env(GRT_PASS_RESET) : "auto"}]
+if {$fused_reset_mode ni {auto native legacy}} { error "Invalid GRT_PASS_RESET '$fused_reset_mode'" }
+set fused_has_native_reset [expr {[info commands ::grt::reset_die_routing_pass] ne ""}]
+if {$fused_reset_mode eq "native" && !$fused_has_native_reset} {
+  error "Native die routing pass reset is unavailable"
+}
+if {$fused_reset_mode ne "legacy" && $fused_has_native_reset &&
+    [llength $fused_bottom] > 0 && [llength $fused_upper] > 0} {
+  ::grt::reset_die_routing_pass
+  puts "GRT_PASS_RESET native"
+} else {
+  # read_guides clears nets_to_route_ without reloading the design or Liberty.
+  # Only bottom nets may rebuild pin models on the current bottom-only grid.
+  # The other nets' original special flags are restored before upper routing.
+  set fused_bottom_set [dict create]
+  foreach name $fused_bottom { dict set fused_bottom_set $name 1 }
+  set fused_temporary_flags {}
+  foreach net [$fused_block getNets] {
+    if {![dict exists $fused_bottom_set [$net getName]] && ![$net isSpecial]} {
+      lappend fused_temporary_flags $net
+      $net setSpecial
+    }
   }
+  try {
+    if {[llength $fused_bottom]} { read_guides $fused_bottom_guide }
+  } finally {
+    foreach net $fused_temporary_flags { $net clearSpecial }
+  }
+  # A stock write_guides emits all guides stored in OpenDB. Remove the first
+  # pass's stored guides after its immutable guide file has been saved, so the
+  # upper output contains exactly the upper pass like an isolated process.
+  foreach net [$fused_block getNets] {
+    foreach guide [$net getGuides] { odb::dbGuide_destroy $guide }
+  }
+  puts "GRT_PASS_RESET legacy"
 }
-try {
-  if {[llength $fused_bottom]} { read_guides $fused_bottom_guide }
-} finally {
-  foreach net $fused_temporary_flags { $net clearSpecial }
+puts "GRT_STAGE reset_pass_ms=[expr {[clock milliseconds] - $fused_started}]"
+fused_stage route_upper {
+  fused_route_pass $fused_upper $fused_top_min $fused_top_max \
+    $fused_upper_guide $::env(REPORTS_DIR)/congestion_upper.rpt
 }
-# A stock write_guides emits all guides stored in OpenDB. Remove the first
-# pass's stored guides after its immutable guide file has been saved, so the
-# upper output contains exactly the upper pass like an isolated process.
-foreach net [$fused_block getNets] {
-  foreach guide [$net getGuides] { odb::dbGuide_destroy $guide }
-}
-fused_route_pass $fused_upper $fused_top_min $fused_top_max \
-  $fused_upper_guide $::env(REPORTS_DIR)/congestion_upper.rpt
 
 set fused_guide $::env(RESULTS_DIR)/route.guide
-exec python3 $fused_script_dir/merge_route_guides.py $fused_guide $fused_bottom_guide $fused_upper_guide
+fused_stage merge_guides {
+  exec python3 $fused_script_dir/merge_route_guides.py $fused_guide $fused_bottom_guide $fused_upper_guide
+}
 if {![info exists ::env(VALIDATE_DIE_GUIDES)] || $::env(VALIDATE_DIE_GUIDES) ni {"" "0"}} {
   set fused_max_cc [expr {[info exists ::env(DIE_GUIDE_MAX_CC_RECTS)] ? $::env(DIE_GUIDE_MAX_CC_RECTS) : 5000}]
-  exec python3 $fused_script_dir/check_2d_net_guide_layers.py $fused_guide $fused_input_def
-  exec python3 $fused_script_dir/diagnose_guide_connectivity.py $::env(RESULTS_DIR) \
-    --def-file $fused_input_def --strict --top 50 --max-cc-rects $fused_max_cc
+  fused_stage check_guide_layers {
+    exec python3 $fused_script_dir/check_2d_net_guide_layers.py $fused_guide $fused_input_def \
+      --classification-cache $fused_classification_cache
+  }
+  fused_stage check_guide_connectivity {
+    exec python3 $fused_script_dir/diagnose_guide_connectivity.py $::env(RESULTS_DIR) \
+      --def-file $fused_input_def --strict --top 50 --max-cc-rects $fused_max_cc
+  }
 }
+set fused_started [clock milliseconds]
 # Restore exactly the track patterns and net uses saved before routing. Native
 # OpenROAD cannot read_db over a populated design, so restoration uses OpenDB
 # setters and recreates each grid immediately to retain its original table id.
@@ -159,4 +203,5 @@ set fp [open ${fused_marker}.[pid].tmp w]
 puts $fp "odb_size=[file size $fused_output]"
 close $fp
 file rename -force ${fused_marker}.[pid].tmp $fused_marker
+puts "GRT_STAGE finalize_ms=[expr {[clock milliseconds] - $fused_started}]"
 puts "Fused die-by-die GRT complete: $fused_output"

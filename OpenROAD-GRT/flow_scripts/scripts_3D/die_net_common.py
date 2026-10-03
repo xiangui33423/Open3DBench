@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
+import os
+import tempfile
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +19,8 @@ NET_HEADER_RE = re.compile(r"^\s*-\s+(\S+)")
 PIN_CONN_RE = re.compile(r"\(\s*(\S+)\s+(\S+)\s*\)")
 DEF_LAYER_RE = re.compile(r"\+\s+LAYER\s+(\S+)", re.IGNORECASE)
 METAL_LAYER_RE = re.compile(r"^metal(\d+)$", re.IGNORECASE)
+CLASSIFICATION_CACHE_VERSION = 1
+CLASSIFICATION_LABELS = frozenset(("2d_bottom", "2d_upper", "3d", "unknown"))
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,92 @@ class NetRecord:
 
     name: str
     pins: tuple[PinRef, ...]
+
+
+def def_sha256(def_path: Path) -> str:
+    """Hash the complete DEF bytes without retaining the file in memory."""
+    digest = hashlib.sha256()
+    with def_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def classification_payload_sha256(classification: dict[str, str]) -> str:
+    """Hash every classification in its original DEF insertion order."""
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(ensure_ascii=True, separators=(",", ":"))
+    for chunk in encoder.iterencode(classification):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def write_classification_cache(
+    path: Path,
+    def_path: Path,
+    classification: dict[str, str],
+    *,
+    expected_def_sha256: str | None = None,
+) -> None:
+    """Atomically publish a complete classification tied to exact DEF bytes."""
+    input_digest = def_sha256(def_path)
+    if expected_def_sha256 is not None and input_digest != expected_def_sha256:
+        raise ValueError("DEF changed while producing its classification cache")
+    record = {
+        "schema_version": CLASSIFICATION_CACHE_VERSION,
+        "def_sha256": input_digest,
+        "payload_sha256": classification_payload_sha256(classification),
+        "classification": classification,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".",
+            suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = stream.name
+            json.dump(record, stream, ensure_ascii=True, separators=(",", ":"))
+            stream.write("\n")
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def read_classification_cache(path: Path, def_path: Path) -> dict[str, str] | None:
+    """Return a verified complete cache, or None to request fresh parsing."""
+    try:
+        with path.open(encoding="utf-8") as stream:
+            record = json.load(stream)
+        if not isinstance(record, dict):
+            return None
+        version = record.get("schema_version")
+        if type(version) is not int or version != CLASSIFICATION_CACHE_VERSION:
+            return None
+        input_digest = record.get("def_sha256")
+        payload_digest = record.get("payload_sha256")
+        if not isinstance(input_digest, str) or not isinstance(payload_digest, str):
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", input_digest):
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
+            return None
+        classification = record.get("classification")
+        if not isinstance(classification, dict):
+            return None
+        if any(not isinstance(name, str) or not isinstance(label, str)
+               or label not in CLASSIFICATION_LABELS
+               for name, label in classification.items()):
+            return None
+        if classification_payload_sha256(classification) != payload_digest:
+            return None
+        if def_sha256(def_path) != input_digest:
+            return None
+        return classification
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def name_die(name: str) -> str | None:
@@ -136,25 +229,20 @@ def parse_pin_die_map(def_path: Path) -> dict[str, str]:
     return pin_die_map
 
 
-def parse_nets(def_path: Path) -> list[NetRecord]:
-    """Parse all DEF nets into NetRecord objects."""
-    nets: list[NetRecord] = []
+def iter_nets(
+    def_path: Path,
+    *,
+    net_name_filter: Callable[[str], bool] | None = None,
+) -> Iterator[NetRecord]:
+    """Yield DEF nets, allocating pin references only for selected net names.
+
+    Filtering selects entire nets: every connection of a selected net is kept
+    in DEF order, including ordinary instance and package pins.
+    """
     in_nets = False
     current_name: str | None = None
     current_pins: list[PinRef] = []
-
-    def flush_net() -> None:
-        nonlocal current_name, current_pins
-        if current_name is None:
-            return
-        nets.append(
-            NetRecord(
-                name=current_name,
-                pins=tuple(current_pins),
-            )
-        )
-        current_name = None
-        current_pins = []
+    selected = False
 
     with def_path.open(encoding="utf-8") as def_file:
         for line in def_file:
@@ -163,29 +251,40 @@ def parse_nets(def_path: Path) -> list[NetRecord]:
                 in_nets = True
                 continue
             if in_nets and stripped.startswith("END NETS"):
-                flush_net()
+                if current_name is not None and selected:
+                    yield NetRecord(name=current_name, pins=tuple(current_pins))
                 break
             if not in_nets:
                 continue
 
             if stripped.startswith("- "):
-                flush_net()
+                if current_name is not None and selected:
+                    yield NetRecord(name=current_name, pins=tuple(current_pins))
+                current_name = None
+                current_pins = []
+                selected = False
                 header_match = NET_HEADER_RE.match(stripped)
                 if not header_match:
                     continue
                 current_name = header_match.group(1)
+                selected = net_name_filter is None or net_name_filter(current_name)
+                if not selected:
+                    continue
                 rest = stripped[len("- " + current_name) :].strip()
                 for inst, pin_name in PIN_CONN_RE.findall(rest):
                     current_pins.append(PinRef(inst=inst, pin=pin_name))
                 continue
 
-            if current_name is None:
+            if current_name is None or not selected:
                 continue
 
             for inst, pin_name in PIN_CONN_RE.findall(stripped):
                 current_pins.append(PinRef(inst=inst, pin=pin_name))
 
-    return nets
+
+def parse_nets(def_path: Path) -> list[NetRecord]:
+    """Parse all DEF nets into NetRecord objects."""
+    return list(iter_nets(def_path))
 
 
 def classify_net_pins(
@@ -215,7 +314,7 @@ def classify_net_pins(
 
 
 def classify_all_nets(
-    nets: list[NetRecord],
+    nets: Iterable[NetRecord],
     inst_die_map: dict[str, str],
     pin_die_map: dict[str, str] | None = None,
 ) -> dict[str, str]:

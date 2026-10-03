@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from die_net_common import parse_nets
+from die_net_common import iter_nets
 
 GCELL_STEP = 4200
 BOTTOM_DIE_MAX_LAYER = 10
@@ -22,7 +22,7 @@ GRT_MISSING_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GuideRect:
     """One global-route guide rectangle."""
 
@@ -55,18 +55,23 @@ def parse_grt_missing(log_path: Path) -> dict[str, set[str]]:
     missing: dict[str, set[str]] = defaultdict(set)
     if not log_path.exists():
         return missing
-    for line in log_path.open(encoding="utf-8"):
-        match = GRT_MISSING_RE.search(line)
-        if match:
-            pin, net = match.group(1), match.group(2)
-            missing[net].add(pin)
+    with log_path.open(encoding="utf-8") as log_file:
+        for line in log_file:
+            match = GRT_MISSING_RE.search(line)
+            if match:
+                pin, net = match.group(1), match.group(2)
+                missing[net].add(pin)
     return missing
 
 
-def parse_guides(guide_path: Path) -> dict[str, list[GuideRect]]:
+def parse_guides(
+    guide_path: Path,
+    split_only: bool = False,
+) -> dict[str, list[GuideRect]]:
     """Parse route.guide into net -> guide rectangles."""
     nets: dict[str, list[GuideRect]] = defaultdict(list)
     cur_net: str | None = None
+    selected = False
     with guide_path.open(encoding="utf-8") as guide_file:
         for line in guide_file:
             stripped = line.strip()
@@ -77,7 +82,7 @@ def parse_guides(guide_path: Path) -> dict[str, list[GuideRect]]:
             parts = stripped.split()
             if len(parts) >= 5:
                 layer = parts[-1]
-                if METAL_RE.match(layer) and cur_net:
+                if selected and METAL_RE.match(layer) and cur_net:
                     nets[cur_net].append(
                         GuideRect(
                             layer=layer,
@@ -92,18 +97,28 @@ def parse_guides(guide_path: Path) -> dict[str, list[GuideRect]]:
                 cur_net = parts[0]
             elif stripped.endswith("("):
                 cur_net = stripped[:-1].strip()
+            selected = cur_net is not None and (
+                not split_only or is_hbt_split_net(cur_net)
+            )
     return nets
 
 
 def pin_covered(x: int, y: int, rects: list[GuideRect], margin: int) -> bool:
     """Check whether a pin coordinate overlaps any guide bbox (expanded)."""
-    for rect in rects:
+    return first_covering_rect(x, y, rects, margin) is not None
+
+
+def first_covering_rect(
+    x: int, y: int, rects: list[GuideRect], margin: int,
+) -> int | None:
+    """Return the first covering rectangle, preserving guide-file order."""
+    for idx, rect in enumerate(rects):
         if (
             rect.x1 - margin <= x <= rect.x2 + margin
             and rect.y1 - margin <= y <= rect.y2 + margin
         ):
-            return True
-    return False
+            return idx
+    return None
 
 
 def is_hbt_split_net(net: str) -> bool:
@@ -127,38 +142,54 @@ def xy_touches(a: GuideRect, b: GuideRect, margin: int = 1) -> bool:
     )
 
 
-def guide_components_3d(rects: list[GuideRect]) -> list[int]:
-    """Return 3D connected-component ids for guide rectangles."""
+def guide_component_ids(rects: list[GuideRect]) -> tuple[list[int], list[int]]:
+    """Compute same-layer and 3D component ids in one rectangle-pair pass.
+
+    Same-layer reports compare the original layer spelling. 3D connectivity
+    compares metal numbers and permits contact between adjacent layers only
+    without the one-DBU same-layer tolerance.
+    """
     if not rects:
-        return []
-    parent = list(range(len(rects)))
+        return [], []
+    same_parent = list(range(len(rects)))
+    three_d_parent = list(range(len(rects)))
     layer_ids = [metal_index(rect.layer) for rect in rects]
 
-    def find(idx: int) -> int:
+    def find(parent: list[int], idx: int) -> int:
         while parent[idx] != idx:
             parent[idx] = parent[parent[idx]]
             idx = parent[idx]
         return idx
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
+    def union(parent: list[int], a: int, b: int) -> None:
+        ra, rb = find(parent, a), find(parent, b)
         if ra != rb:
             parent[rb] = ra
 
     for i in range(len(rects)):
         li = layer_ids[i]
-        if li is None:
-            continue
         for j in range(i + 1, len(rects)):
             lj = layer_ids[j]
-            if lj is None:
+            same_layer = rects[i].layer == rects[j].layer
+            if same_layer:
+                if xy_touches(rects[i], rects[j]):
+                    union(same_parent, i, j)
+                    if li is not None:
+                        union(three_d_parent, i, j)
+            elif li is None or lj is None:
                 continue
-            if li == lj and xy_touches(rects[i], rects[j]):
-                union(i, j)
+            elif li == lj and xy_touches(rects[i], rects[j]):
+                union(three_d_parent, i, j)
             elif abs(li - lj) == 1 and xy_touches(rects[i], rects[j], margin=0):
-                union(i, j)
+                union(three_d_parent, i, j)
 
-    return [find(i) for i in range(len(rects))]
+    return ([find(same_parent, i) for i in range(len(rects))],
+            [find(three_d_parent, i) for i in range(len(rects))])
+
+
+def guide_components_3d(rects: list[GuideRect]) -> list[int]:
+    """Return 3D connected-component ids for guide rectangles."""
+    return guide_component_ids(rects)[1]
 
 
 def pin_component_count(
@@ -172,10 +203,9 @@ def pin_component_count(
     components = guide_components_3d(rects)
     pin_components: set[int] = set()
     for _inst, x, y in pins:
-        for idx, rect in enumerate(rects):
-            if pin_covered(x, y, [rect], margin):
-                pin_components.add(components[idx])
-                break
+        idx = first_covering_rect(x, y, rects, margin)
+        if idx is not None:
+            pin_components.add(components[idx])
     return len(pin_components)
 
 
@@ -195,39 +225,13 @@ def illegal_layer_count(net: str, rects: list[GuideRect]) -> int:
 
 def same_layer_components(rects: list[GuideRect]) -> int:
     """Count connected components among same-layer touching rectangles."""
-    if not rects:
-        return 0
-    parent = list(range(len(rects)))
-
-    def find(idx: int) -> int:
-        while parent[idx] != idx:
-            parent[idx] = parent[parent[idx]]
-            idx = parent[idx]
-        return idx
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    def touches(a: GuideRect, b: GuideRect) -> bool:
-        if a.layer != b.layer:
-            return False
-        return not (
-            a.x2 < b.x1 - 1
-            or b.x2 < a.x1 - 1
-            or a.y2 < b.y1 - 1
-            or b.y2 < a.y1 - 1
-        )
-
-    for i in range(len(rects)):
-        for j in range(i + 1, len(rects)):
-            if touches(rects[i], rects[j]):
-                union(i, j)
-    return len({find(i) for i in range(len(rects))})
+    return len(set(guide_component_ids(rects)[0]))
 
 
-def parse_components_multiline(def_path: Path) -> dict[str, tuple[int, int]]:
+def parse_components_multiline(
+    def_path: Path,
+    instance_names: set[str] | None = None,
+) -> dict[str, tuple[int, int]]:
     """Parse DEF components; PLACED may appear on the following line."""
     components: dict[str, tuple[int, int]] = {}
     in_components = False
@@ -246,6 +250,8 @@ def parse_components_multiline(def_path: Path) -> dict[str, tuple[int, int]]:
             if stripped.startswith("- "):
                 parts = stripped.split()
                 pending_inst = parts[1] if len(parts) >= 2 else None
+                if instance_names is not None and pending_inst not in instance_names:
+                    pending_inst = None
                 if pending_inst and ("PLACED" in stripped or "FIXED" in stripped):
                     match = re.search(r"\(\s*(\d+)\s+(\d+)\s*\)", stripped)
                     if match:
@@ -269,11 +275,18 @@ def parse_components_multiline(def_path: Path) -> dict[str, tuple[int, int]]:
 
 def build_net_pins(
     def_path: Path,
+    split_only: bool = False,
 ) -> dict[str, list[tuple[str, int, int]]]:
     """Return net -> [(inst, x, y), ...] using component origins."""
-    components = parse_components_multiline(def_path)
+    if split_only:
+        nets = list(iter_nets(def_path, net_name_filter=is_hbt_split_net))
+        instance_names = {pin.inst for net in nets for pin in net.pins}
+        components = parse_components_multiline(def_path, instance_names)
+    else:
+        components = parse_components_multiline(def_path)
+        nets = iter_nets(def_path)
     net_pins: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
-    for net in parse_nets(def_path):
+    for net in nets:
         for pin_ref in net.pins:
             loc = components.get(pin_ref.inst)
             if loc is None:
@@ -294,17 +307,22 @@ def diagnose_net(
     """Build one net-level connectivity report."""
     uncovered = 0
     hbt_uncovered = 0
+    covered_rects: set[int] = set()
     for inst, x, y in pins:
-        if not pin_covered(x, y, rects, margin):
+        idx = first_covering_rect(x, y, rects, margin)
+        if idx is None:
             uncovered += 1
             if inst.startswith(("HBT_", "LS_HBT_")):
                 hbt_uncovered += 1
+        else:
+            covered_rects.add(idx)
 
     cc = 0
     pin_cc = -1
     if len(rects) <= max_cc_rects:
-        cc = same_layer_components(rects)
-        pin_cc = pin_component_count(rects, pins, margin)
+        same_components, components_3d = guide_component_ids(rects)
+        cc = len(set(same_components))
+        pin_cc = len({components_3d[idx] for idx in covered_rects})
     illegal_layers = illegal_layer_count(net, rects)
 
     has_m10 = any(r.layer.lower() == "metal10" for r in (upper_rects or []))
@@ -392,9 +410,9 @@ def run_diagnosis(
     upper_path = results_dir / "route_upper.guide"
     log_path = resolve_grt_log_path(results_dir)
 
-    guides = parse_guides(guide_path)
-    upper_guides = parse_guides(upper_path) if upper_path.exists() else {}
-    net_pins = build_net_pins(def_path)
+    guides = parse_guides(guide_path, split_only)
+    upper_guides = parse_guides(upper_path, split_only) if upper_path.exists() else {}
+    net_pins = build_net_pins(def_path, split_only)
     grt_missing = parse_grt_missing(log_path)
     margin = GCELL_STEP // 2
 

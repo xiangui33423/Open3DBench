@@ -150,6 +150,14 @@ def main() -> None:
     if not (results / '4_cts.odb').is_file():
         raise RuntimeError('Input conversion did not create 4_cts.odb')
     stage_seconds['global_route'] = run_openroad(exe, root / 'flow_scripts/scripts/global_route_die_by_die.tcl', env, logs / 'global_route.log')
+    global_route_log = (logs / 'global_route.log').read_text()
+    detail_seconds = {
+        f'{category.lower()}.{name}': int(milliseconds) / 1000
+        for category, name, milliseconds in re.findall(
+            r'^(MLS|GRT)_STAGE (\w+)_ms=(\d+)$',
+            global_route_log, re.M)
+    }
+    pass_reset = re.search(r'^GRT_PASS_RESET (native|legacy)$', global_route_log, re.M)
     odb, guide, marker = results / '5_1_grt.odb', results / 'route.guide', results / '.grt_finalize_complete'
     if not marker.is_file() or not odb.is_file() or not odb.stat().st_size or not guide.is_file() or not guide.stat().st_size:
         raise RuntimeError(f'Routing did not publish complete output; inspect {logs}')
@@ -171,6 +179,8 @@ def main() -> None:
         'mls_enabled': env.get('MLS_ENABLE', '1') != '0',
         'runtime_seconds': round(time.monotonic() - started, 3),
         'stage_seconds': stage_seconds,
+        'detail_seconds': detail_seconds,
+        'grt_pass_reset': pass_reset.group(1) if pass_reset else 'unreported',
         'global_route_args': env['GLOBAL_ROUTE_ARGS'],
         'grt_process_mode': env.get('GRT_PROCESS_MODE', 'single'),
         'odb_bytes': odb.stat().st_size, 'work_dir': str(work),

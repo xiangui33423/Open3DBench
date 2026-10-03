@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import sys
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,11 +15,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from die_net_common import (
     classify_all_nets,
+    iter_nets,
     parse_inst_die_map,
     parse_nets,
     parse_pin_die_map,
 )
 from check_2d_net_guide_layers import check
+from export_die_net_lists import main as export_main
+from unittest.mock import patch
 
 
 class PackagePinTest(unittest.TestCase):
@@ -51,6 +56,11 @@ END DESIGN
                 nets,
                 parse_inst_die_map(def_path),
                 pin_die_map,
+            )
+            self.assertEqual(
+                classify_all_nets(iter_nets(def_path), parse_inst_die_map(def_path),
+                                  pin_die_map),
+                classification,
             )
 
         self.assertEqual(pin_die_map, {"io_bottom": "bottom", "io_upper": "upper"})
@@ -93,6 +103,38 @@ upper_net
         self.assertEqual(classification["bottom_net"], "2d_bottom")
         self.assertEqual(classification["upper_net"], "2d_upper")
         self.assertEqual(violations, {"bottom_net": [11], "upper_net": [10]})
+
+    def test_streamed_export_preserves_pin_count_duplicates_and_classification(self) -> None:
+        content = """COMPONENTS 2 ;
+  - u_bottom BUF_bottom + PLACED ( 10000 10000 ) N ;
+  - u_upper BUF_upper + PLACED ( 80000 80000 ) N ;
+END COMPONENTS
+PINS 1 ;
+  - io_bottom + NET crossing + LAYER metal6 ( 0 0 ) ( 100 100 ) ;
+END PINS
+NETS 7 ;
+  - bottom_net ( u_bottom A ) ( u_bottom Y ) ;
+  - repeated ( u_bottom A ) ( u_bottom Y ) ;
+  - repeated ( u_upper A ) ( u_upper Y ) ;
+  - single_BOT ( u_bottom A ) ;
+  - empty_TOP ;
+  - crossing ( PIN io_bottom ) ( u_upper A ) ;
+  - unknown ( absent A ) ( absent Y ) ;
+END NETS
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            def_path = Path(temp_dir) / "design.def"
+            output_dir = Path(temp_dir) / "lists"
+            def_path.write_text(content, encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["export", str(def_path), str(output_dir)]):
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(export_main(), 0)
+            self.assertEqual((output_dir / "bottom_2d.txt").read_text(), "bottom_net\n")
+            self.assertEqual((output_dir / "upper_2d.txt").read_text(), "repeated\n")
+            self.assertEqual((output_dir / "special.txt").read_text(),
+                             "crossing\nempty_TOP\nsingle_BOT\nunknown\n")
+            self.assertIn("bottom=1 upper=2 special=4", output.getvalue())
 
 
 if __name__ == "__main__":
