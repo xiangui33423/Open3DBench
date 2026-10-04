@@ -213,6 +213,18 @@ clear_net_routing_layers()
 }
 
 void
+set_net_resistance_aware(odb::dbNet* net)
+{
+  getGlobalRouter()->setNetResistanceAware(net);
+}
+
+void
+clear_net_resistance_aware()
+{
+  getGlobalRouter()->clearNetResistanceAware();
+}
+
+void
 export_mls_manifest(const char* file_name)
 {
   getGlobalRouter()->exportMlsManifest(file_name);

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -20,6 +21,7 @@ from die_net_common import (
     classification_payload_sha256,
     def_sha256,
     read_classification_cache,
+    iter_classification_json,
     write_classification_cache,
 )
 from export_die_net_lists import main as export_main
@@ -138,6 +140,32 @@ upper
         record = json.loads(self.cache.read_text())
         self.assertEqual(record["classification"], self.classification)
         self.assertEqual(record["payload_sha256"], classification_payload_sha256(self.classification))
+
+    def test_batched_cache_encoding_matches_previous_bytes_at_batch_boundaries(self) -> None:
+        for count in (0, 1, 4095, 4096, 4097, 8200):
+            with self.subTest(count=count):
+                labels = ("2d_bottom", "2d_upper", "3d", "unknown")
+                classification = {
+                    f'网路_{index}_\\"\n\t': labels[index % len(labels)]
+                    for index in range(count)
+                }
+                expected = json.dumps(classification, ensure_ascii=True,
+                                      separators=(",", ":"))
+                self.assertEqual("".join(iter_classification_json(classification)), expected)
+                self.assertEqual(classification_payload_sha256(classification),
+                                 hashlib.sha256(expected.encode()).hexdigest())
+                write_classification_cache(self.cache, self.def_path, classification)
+                record = {
+                    "schema_version": 1,
+                    "def_sha256": def_sha256(self.def_path),
+                    "payload_sha256": hashlib.sha256(expected.encode()).hexdigest(),
+                    "classification": classification,
+                }
+                self.assertEqual(self.cache.read_text(),
+                                 json.dumps(record, ensure_ascii=True,
+                                            separators=(",", ":")) + "\n")
+                self.assertEqual(read_classification_cache(self.cache, self.def_path),
+                                 classification)
 
 
 if __name__ == "__main__":

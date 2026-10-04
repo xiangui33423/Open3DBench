@@ -325,6 +325,8 @@ class GlobalRouter
                                int min_layer,
                                int max_layer);
   void clearNetRoutingLayerRanges();
+  void setNetResistanceAware(odb::dbNet* db_net);
+  void clearNetResistanceAware();
   bool getNetRoutingLayerRange(odb::dbNet* db_net,
                                int& min_layer,
                                int& max_layer) const;
@@ -522,6 +524,7 @@ class GlobalRouter
   bool isClkTerm(odb::dbITerm* iterm, sta::dbNetwork* network);
   void initGridAndNets();
   void configFastRoute();
+  void configResistanceAware();
 
   utl::Logger* logger_;
   utl::CallBackHandler* callback_handler_;
@@ -538,6 +541,7 @@ class GlobalRouter
 
   std::map<odb::dbNet*, Net*> db_net_map_;
   std::map<odb::dbNet*, std::pair<int, int>> net_routing_layer_ranges_;
+  std::set<odb::dbNet*> resistance_aware_nets_;
   Grid* grid_;
   std::map<int, odb::dbTechLayer*> routing_layers_;
   std::vector<RoutingTracks> routing_tracks_;

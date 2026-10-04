@@ -62,16 +62,18 @@ Replace `bp_fe` and `baseline` to run another case or keep multiple experiment
 outputs. GRT results are stored under `output/`, and evaluation reports are
 stored under `reports/`.
 
-### MLS submission, version 2
+### MLS submission, version 4
 
 A metal layer sharing implementation is available in `submission/`.
-Version 2 relocates existing HBTs to reduce incident-net HPWL while preserving
-non-HBT placement, then splits up to 192 die-local nets with 384 new HBTs on
-the input pitch lattice. It updates congestion demand after each accepted split
-and jointly selects the two HBT sites. Optional measured net slack can guard
-critical nets.
+Version 4 relocates existing HBTs while preserving non-HBT placement, then
+partitions eligible high-fanout nets into a shared trunk and local sink groups.
+Sinks with excessive geometric detours remain directly connected to the source.
+The existing two-HBT sharing algorithm uses the remaining budget: at most 192
+shared nets and 384 new HBTs in total, all on the legal input pitch lattice.
+Every accepted split updates congestion demand. The same rules apply to all cases.
 See [the algorithm description](OpenROAD-GRT/ALGORITHM.md) and
-[the submission instructions](submission/README.md).
+[the submission instructions](submission/README.md); measured quality and
+verification scope are recorded in [the validation report](submission/VALIDATION.md).
 
 Inside the supplied contest image, build and invoke the four-argument interface:
 
@@ -80,7 +82,7 @@ python3 submission/package.py
 bash submission/build.sh 32
 bash submission/run.sh \
   "$INPUT/cases/bp_fe/grt_input" \
-  output/bp_fe/mls_v2 \
+  output/bp_fe/mls_v4 \
   "$INPUT/platforms/nangate45_3D" 32
 ```
 

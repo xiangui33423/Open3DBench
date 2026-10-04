@@ -363,6 +363,35 @@ proc clear_net_routing_layers { args } {
   grt::clear_net_routing_layers
 }
 
+sta::define_cmd_args "set_net_resistance_aware" { net_name }
+
+proc set_net_resistance_aware { args } {
+  sta::parse_key_args "set_net_resistance_aware" args \
+    keys {} \
+    flags {}
+  sta::check_argc_eq1 "set_net_resistance_aware" $args
+  set net_name [lindex $args 0]
+  set block [ord::get_db_block]
+  if { $block == "NULL" } {
+    utl::error GRT 726 "Missing dbBlock."
+  }
+  set net [$block findNet $net_name]
+  if { $net == "NULL" } {
+    utl::error GRT 727 "Net $net_name not found."
+  }
+  grt::set_net_resistance_aware $net
+}
+
+sta::define_cmd_args "clear_net_resistance_aware" {}
+
+proc clear_net_resistance_aware { args } {
+  sta::parse_key_args "clear_net_resistance_aware" args \
+    keys {} \
+    flags {}
+  sta::check_argc_eq0 "clear_net_resistance_aware" $args
+  grt::clear_net_resistance_aware
+}
+
 sta::define_cmd_args "set_nets_to_route" { net_names }
 
 proc set_nets_to_route { args } {

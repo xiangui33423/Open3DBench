@@ -97,6 +97,16 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.threads <= 32:
         parser.error('threads must be an integer between 1 and 32')
+    process_mode = os.environ.get('GRT_PROCESS_MODE', 'single')
+    input_mode = os.environ.get('GRT_INPUT_MODE', 'auto')
+    if process_mode not in ('single', 'isolated'):
+        parser.error("GRT_PROCESS_MODE must be 'single' or 'isolated'")
+    if input_mode not in ('auto', 'def', 'odb'):
+        parser.error("GRT_INPUT_MODE must be 'auto', 'def', or 'odb'")
+    if input_mode == 'auto':
+        input_mode = 'def' if process_mode == 'single' else 'odb'
+    if process_mode == 'isolated' and input_mode == 'def':
+        parser.error('Direct DEF input requires GRT_PROCESS_MODE=single')
     root = Path(__file__).resolve().parents[1]
     input_dir = args.input_dir.resolve(strict=True)
     platform = args.platform_dir.resolve(strict=True)
@@ -128,6 +138,8 @@ def main() -> None:
         'MIN_ROUTING_LAYER': 'metal2', 'MAX_ROUTING_LAYER': 'metal20',
         'FASTROUTE_TCL': str(platform / 'fastroute.tcl'),
         'SUBMISSION_COLLATERAL_TCL': str(work / 'collateral.tcl'),
+        'GRT_INITIAL_DESIGN': '4_1_cts.def' if input_mode == 'def' else '4_cts.odb',
+        'GRT_PROCESS_MODE': process_mode,
     })
     (work / 'collateral.tcl').write_text(
         'set submission_lefs [list ' + ' '.join(tcl_quote(str(p)) for p in lefs) + ']\n' +
@@ -144,13 +156,18 @@ def main() -> None:
     else:
         env.pop('GRT_PREPARE_TCL', None)
     stage_seconds = {}
-    stage_seconds['load_input'] = run_openroad(exe, root / 'src/load_input.tcl', env, logs / 'load_input.log')
-    if 'SUBMISSION_LAYER_CLAMP_READY' not in (logs / 'load_input.log').read_text():
-        raise RuntimeError('OpenROAD initialization or layer-clamp probe failed')
-    if not (results / '4_cts.odb').is_file():
-        raise RuntimeError('Input conversion did not create 4_cts.odb')
+    if input_mode == 'odb':
+        stage_seconds['load_input'] = run_openroad(exe, root / 'src/load_input.tcl', env, logs / 'load_input.log')
+        if 'SUBMISSION_LAYER_CLAMP_READY' not in (logs / 'load_input.log').read_text():
+            raise RuntimeError('OpenROAD initialization or layer-clamp probe failed')
+        if not (results / '4_cts.odb').is_file():
+            raise RuntimeError('Input conversion did not create 4_cts.odb')
+    else:
+        stage_seconds['load_input'] = 0.0
     stage_seconds['global_route'] = run_openroad(exe, root / 'flow_scripts/scripts/global_route_die_by_die.tcl', env, logs / 'global_route.log')
     global_route_log = (logs / 'global_route.log').read_text()
+    if input_mode == 'def' and 'SUBMISSION_LAYER_CLAMP_READY' not in global_route_log:
+        raise RuntimeError('Direct DEF initialization or layer-clamp probe failed')
     detail_seconds = {
         f'{category.lower()}.{name}': int(milliseconds) / 1000
         for category, name, milliseconds in re.findall(
@@ -158,6 +175,15 @@ def main() -> None:
             global_route_log, re.M)
     }
     pass_reset = re.search(r'^GRT_PASS_RESET (native|legacy)$', global_route_log, re.M)
+    check_mode = re.search(r'^GRT_CHECK_MODE (parallel|serial)$', global_route_log, re.M)
+    layer_hint_counts = {
+        interval: int(count) for count, interval in re.findall(
+            r'^GRT_LAYER_HINTS applied=(\d+) die=(\S+)$', global_route_log, re.M)
+    }
+    resistance_hint_counts = {
+        interval: int(count) for count, interval in re.findall(
+            r'^GRT_RESISTANCE_HINTS applied=(\d+) die=(\S+)$', global_route_log, re.M)
+    }
     odb, guide, marker = results / '5_1_grt.odb', results / 'route.guide', results / '.grt_finalize_complete'
     if not marker.is_file() or not odb.is_file() or not odb.stat().st_size or not guide.is_file() or not guide.stat().st_size:
         raise RuntimeError(f'Routing did not publish complete output; inspect {logs}')
@@ -181,8 +207,11 @@ def main() -> None:
         'stage_seconds': stage_seconds,
         'detail_seconds': detail_seconds,
         'grt_pass_reset': pass_reset.group(1) if pass_reset else 'unreported',
+        'grt_check_mode': check_mode.group(1) if check_mode else 'unreported',
+        'grt_layer_hint_counts': layer_hint_counts,
+        'grt_resistance_hint_counts': resistance_hint_counts,
         'global_route_args': env['GLOBAL_ROUTE_ARGS'],
-        'grt_process_mode': env.get('GRT_PROCESS_MODE', 'single'),
+        'grt_process_mode': process_mode, 'grt_input_mode': input_mode,
         'odb_bytes': odb.stat().st_size, 'work_dir': str(work),
     }
     (output / 'run_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

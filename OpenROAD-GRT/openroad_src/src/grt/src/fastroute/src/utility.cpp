@@ -153,12 +153,16 @@ void FastRouteCore::netpinOrderInc()
 
     // Prioritize nets with worst slack first
     const float res_aware_score
-        = nets_[netID]->isResAware() ? -getResAwareScore(nets_[netID]) : 0;
+        = !selective_resistance_aware_ && nets_[netID]->isResAware()
+              ? -getResAwareScore(nets_[netID])
+              : 0;
 
     // Prioritize clock nets when using resistance-aware strategy to
     // better balance clock skew
     const int is_clock
-        = (enable_resistance_aware_) ? !nets_[netID]->isClock() : 0;
+        = enable_resistance_aware_ && !selective_resistance_aware_
+              ? !nets_[netID]->isClock()
+              : 0;
 
     tree_order_pv_.push_back(
         {netID, xmin, length_per_pin, ndr_priority, res_aware_score, is_clock});
@@ -173,6 +177,12 @@ void FastRouteCore::netpinOrderInc()
         "Number of nets with resistance-aware strategy: {} ({:.2f}%)",
         res_aware_nets,
         static_cast<float>(res_aware_nets) / net_ids_.size() * 100);
+  }
+  if (selective_resistance_aware_) {
+    logger_->report("GRT_SELECTIVE_RA active_nets={} total_nets={} "
+                    "automatic_selection=0",
+                    res_aware_nets,
+                    net_ids_.size());
   }
   std::ranges::stable_sort(tree_order_pv_, compareNetPins);
 }
@@ -477,6 +487,10 @@ void FastRouteCore::fixEdgeAssignment(int& net_layer,
 // Optimize performance
 void FastRouteCore::preProcessTechLayers()
 {
+  // A router can run again with a different layer count (e.g. another die).
+  // Rebuild the indexed cache instead of appending behind the previous pass.
+  db_layers_.clear();
+  db_layers_.reserve(static_cast<size_t>(num_layers_) * 2);
   for (int layer = 0; layer < num_layers_; layer++) {
     odb::dbTech* tech = db_->getTech();
     odb::dbTechLayer* db_layer = tech->findRoutingLayer(layer + 1);
@@ -636,6 +650,11 @@ void FastRouteCore::setIncrementalGrt(bool is_incremental)
 // nets to use the resistance-aware strategy
 void FastRouteCore::updateSlacks(float percentage)
 {
+  // Explicit selections use resistance costs without global STA, automatic
+  // critical-net selection, or clock/NDR promotion.
+  if (selective_resistance_aware_) {
+    return;
+  }
   // Check if liberty file was loaded before calculating slack
   if (sta_->getDbNetwork()->defaultLibertyLibrary() == nullptr
       || !enable_resistance_aware_) {

@@ -158,6 +158,36 @@ class MlsPlannerTest(unittest.TestCase):
         self.assertEqual(len(first["selected"]), 2)
         self.assert_contract(design, first)
 
+    def test_shared_paths_respect_each_sink_bound_and_lattice_allowance(self):
+        design = manifest()
+        # The original horizontal path is off the HBT lattice: exact zero
+        # detour is impossible even though aggregate HPWL permits sharing.
+        self.assertEqual(len(plan_design(design, PERMISSIVE)["selected"]), 1)
+        guarded_config = {**PERMISSIVE, "sharing_path_max_detour_fraction": 0.0,
+                          "sharing_path_max_detour_um": 0.0}
+        self.assertEqual(plan_design(design, guarded_config)["selected"], [])
+        guarded_config["sharing_path_max_detour_um"] = 6.4
+        result = plan_design(design, guarded_config)
+        self.assertEqual(len(result["selected"]), 1)
+        self.assert_contract(design, result)
+        pins = {(p["inst"], p["pin"]): p for p in design["nets"][0]["pins"]}
+        driver = next(p for p in pins.values() if p["io"] == "OUTPUT")
+        entry = result["selected"][0]
+        h0, h1 = entry["hbts"]
+        distance = lambda a, b: abs(a["x"] - b["x"]) + abs(a["y"] - b["y"])
+        for ref in entry["subnets"][-1]["pins"]:
+            if (ref["inst"], ref["pin"]) in pins:
+                sink = pins[ref["inst"], ref["pin"]]
+                actual = distance(driver, h0) + distance(h0, h1) + distance(h1, sink)
+                self.assertLessEqual(actual, distance(driver, sink) + 6400)
+
+    def test_path_bound_configuration_rejects_invalid_values(self):
+        for key in ("relocation_path_max_growth_fraction", "relocation_path_max_growth_um",
+                    "sharing_path_max_detour_fraction", "sharing_path_max_detour_um"):
+            for invalid in (-1, True, float("inf"), float("nan"), "0"):
+                with self.subTest(key=key, invalid=invalid), self.assertRaises(ValueError):
+                    config_values({key: invalid})
+
     def test_preserves_nonzero_reference_origin_lattice(self):
         design = manifest()
         design["hbts"] = [{"name": "HBT_0", "x": 2500, "y": 3700},

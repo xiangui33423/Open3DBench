@@ -10,7 +10,8 @@ proc fused_stage {name script} {
   return $result
 }
 set fused_started [clock milliseconds]
-load_design 4_cts.odb 4_cts.sdc "Starting fused die-by-die global routing"
+set fused_initial_design [expr {[info exists ::env(GRT_INITIAL_DESIGN)] ? $::env(GRT_INITIAL_DESIGN) : "4_cts.odb"}]
+load_design $fused_initial_design 4_cts.sdc "Starting fused die-by-die global routing"
 puts "GRT_STAGE load_design_ms=[expr {[clock milliseconds] - $fused_started}]"
 set fused_script_dir [file dirname [file normalize [info script]]]
 set fused_input_def $::env(RESULTS_DIR)/4_1_cts.def
@@ -18,11 +19,30 @@ if {[info exists ::env(GRT_PREPARE_TCL)] && $::env(GRT_PREPARE_TCL) ne ""} {
   fused_stage prepare {source [file normalize $::env(GRT_PREPARE_TCL)]}
   set fused_input_def $::env(RESULTS_DIR)/4_grt_input.def
   fused_stage write_prepared {
-    write_db $::env(RESULTS_DIR)/4_grt_input.odb
+    # The single process keeps this prepared database live for both passes.
+    # Preserve the optional checkpoint for debugging, without serializing it
+    # in the normal path. Classification and strict checks still use the DEF.
+    if {[info exists ::env(GRT_SAVE_CHECKPOINTS)] && $::env(GRT_SAVE_CHECKPOINTS) eq "1"} {
+      write_db $::env(RESULTS_DIR)/4_grt_input.odb
+    }
     write_def $fused_input_def
   }
 }
 set ::env(GRT_INPUT_DEF) $fused_input_def
+set ::grt_layer_hints [dict create]
+set fused_hints_mode [expr {[info exists ::env(GRT_HIGH_FANOUT_LAYERS)] ? $::env(GRT_HIGH_FANOUT_LAYERS) : "0"}]
+if {$fused_hints_mode ni {0 1}} { error "GRT_HIGH_FANOUT_LAYERS must be 0 or 1" }
+set ::fused_hints_policy [expr {[info exists ::env(GRT_HIGH_FANOUT_POLICY)] ? $::env(GRT_HIGH_FANOUT_POLICY) : "layers"}]
+if {$::fused_hints_policy ni {layers resistance}} { error "GRT_HIGH_FANOUT_POLICY must be layers or resistance" }
+if {$fused_hints_mode eq "1" && [file exists $::env(RESULTS_DIR)/mls_manifest.json]} {
+  fused_stage plan_layer_hints {
+    set fused_hints_tcl $::env(RESULTS_DIR)/net_layer_hints.tcl
+    puts [exec python3 $fused_script_dir/plan_net_layer_hints.py \
+      --manifest $::env(RESULTS_DIR)/mls_manifest.json --enable \
+      --output-tcl $fused_hints_tcl --report-json $::env(REPORTS_DIR)/net_layer_hints.json]
+    source $fused_hints_tcl
+  }
+}
 # Keep the pre-GRT metadata used by an isolated finalizer. make_tracks appends
 # patterns to a populated grid, and GRT marks clock leaf nets as CLOCK.
 set fused_block [ord::get_db_block]
@@ -88,12 +108,59 @@ proc fused_route_pass {names min_layer max_layer guide report} {
   set_routing_layers -signal ${min_layer}-${max_layer}
   set_global_routing_layer_adjustment ${min_layer}-${max_layer} $::fused_adjustment
   if {[info exists ::env(MACRO_EXTENSION)]} { set_macro_extension $::env(MACRO_EXTENSION) }
+  set has_hints [expr {[dict size $::grt_layer_hints] > 0}]
+  set hints_policy [expr {[info exists ::fused_hints_policy] ? $::fused_hints_policy : "layers"}]
+  set hint_count 0
+  set resistance_hint_count 0
+  if {$has_hints && $hints_policy eq "resistance"} {
+    if {[info commands ::grt::clear_net_resistance_aware] eq "" ||
+        [info commands set_net_resistance_aware] eq ""} {
+      error "Selected-net resistance routing requires the matching submitted GRT binary"
+    }
+    # The next pass must not inherit the first die's selected network set.
+    ::grt::clear_net_resistance_aware
+  }
+  set tech [ord::get_db_tech]
+  set pass_min [[$tech findLayer $min_layer] getRoutingLevel]
+  set pass_max [[$tech findLayer $max_layer] getRoutingLevel]
   foreach name $names {
     set net [$::fused_block findNet $name]
     if {$net eq "NULL"} { error "Missing classified net '$name'" }
-    set_net_routing_layers $name $min_layer $max_layer
+    set net_min $min_layer
+    set net_max $max_layer
+    if {$has_hints && [dict exists $::grt_layer_hints $name] && [$net getSigType] eq "SIGNAL"} {
+      # Clock/power master pins can identify protected nets even if their
+      # DEF USE was omitted. Never promote their routing floor/ceiling.
+      set protected 0
+      foreach iterm [$net getITerms] {
+        if {[[$iterm getMTerm] getSigType] in {CLOCK POWER GROUND}} {
+          set protected 1
+          break
+        }
+      }
+      if {!$protected} {
+        if {$hints_policy eq "resistance"} {
+          set_net_resistance_aware $name
+          incr resistance_hint_count
+        } else {
+          lassign [dict get $::grt_layer_hints $name] hint_min hint_max
+          set hint_lo [$tech findLayer $hint_min]
+          set hint_hi [$tech findLayer $hint_max]
+          if {$hint_lo eq "NULL" || $hint_hi eq "NULL"} { error "Unknown hinted routing layer for '$name'" }
+          set lo [expr {max($pass_min, [$hint_lo getRoutingLevel])}]
+          set hi [expr {min($pass_max, [$hint_hi getRoutingLevel])}]
+          if {$lo > $hi} { error "Layer hint leaves no legal die layer for '$name'" }
+          set net_min [[$tech findRoutingLayer $lo] getName]
+          set net_max [[$tech findRoutingLayer $hi] getName]
+          incr hint_count
+        }
+      }
+    }
+    set_net_routing_layers $name $net_min $net_max
     grt::add_net_to_route $net
   }
+  puts "GRT_LAYER_HINTS applied=$hint_count die=$min_layer-$max_layer"
+  puts "GRT_RESISTANCE_HINTS applied=$resistance_hint_count die=$min_layer-$max_layer"
   puts "Fused process pass: [llength $names] nets on $min_layer-$max_layer"
   global_route -guide_file $guide -congestion_report_file $report {*}$::fused_args
 }
@@ -158,14 +225,11 @@ fused_stage merge_guides {
 }
 if {![info exists ::env(VALIDATE_DIE_GUIDES)] || $::env(VALIDATE_DIE_GUIDES) ni {"" "0"}} {
   set fused_max_cc [expr {[info exists ::env(DIE_GUIDE_MAX_CC_RECTS)] ? $::env(DIE_GUIDE_MAX_CC_RECTS) : 5000}]
-  fused_stage check_guide_layers {
-    exec python3 $fused_script_dir/check_2d_net_guide_layers.py $fused_guide $fused_input_def \
-      --classification-cache $fused_classification_cache
-  }
-  fused_stage check_guide_connectivity {
-    exec python3 $fused_script_dir/diagnose_guide_connectivity.py $::env(RESULTS_DIR) \
-      --def-file $fused_input_def --strict --top 50 --max-cc-rects $fused_max_cc
-  }
+  # The router is idle here. Independent read-only checks can share two of
+  # its reserved cores; either failure still prevents ODB publication.
+  puts [exec python3 $fused_script_dir/validate_die_guides.py $::env(RESULTS_DIR) \
+    --def-file $fused_input_def --classification-cache $fused_classification_cache \
+    --top 50 --max-cc-rects $fused_max_cc]
 }
 set fused_started [clock milliseconds]
 # Restore exactly the track patterns and net uses saved before routing. Native

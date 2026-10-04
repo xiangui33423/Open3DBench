@@ -1,6 +1,6 @@
-# 第三版：大规模 HBT 优化与原生网表导出
+# 第四版：带路径保护的多分支金属层共享
 
-本版保留官方四参数入口：CTS 后 DEF/SDC → HBT 与共享网协同优化 → 逐 die 硬层约束 GRT → `5_1_grt.odb`。在第二版的 HBT 坐标下降、192 条共享网和动态需求基础上，解除大设计中提前截断的 HBT 移动次数上限，改用原生 OpenDB 几何导出、流式 guide 校验与完整网分类复用，降低全量网表处理成本。几何目标用于选择方案，实际收益必须通过固定 DRT/DRC/STA 评估；实测记录见 `submission/VALIDATION.md`。
+本版保留官方四参数入口：CTS 后 DEF/SDC → HBT 与共享网协同优化 → 逐 die 硬层约束 GRT → `5_1_grt.odb`。在第三版的 HBT 坐标下降、动态需求和原生网表导出基础上，新增高扇出网多分支共享，并逐个保护不适合跨层的接收端。全设计仍最多共享 192 条网、新增 384 颗 HBT。运行入口同时减少中间文件和检查开销。选择性电阻代价等消融选项默认关闭；实测范围、收益及取舍见 `submission/VALIDATION.md`。
 
 ## 1. 既有 HBT 重定位
 
@@ -16,7 +16,28 @@ HBT pin 的位置随移动同步更新，多个 HBT 相连的网使用前一步�
 
 将 die 区域划分为默认 32×32 的网格。每条同 die 线网按 pin 包围盒分配 HPWL，建立类似 RUDY 的需求图。该图不包含详细布线阻塞和精确金属容量。
 
-候选必须是非 special 的 SIGNAL 网，pin 数为 2–16，只有一个 OUTPUT driver，其他 pin 均为 INPUT，且所有 pin 属于同一 die。不处理 HBT/封装引脚网、既有 `_BOT`/`_TOP` 子网或已有 MLS 家族。原网 HPWL 至少 40 μm。
+### 高扇出多分支与接收端保护
+
+默认先处理底 die 上唯一 OUTPUT 驱动、至少 128 个 INPUT 接收端、HPWL 至少 400 μm 的普通 SIGNAL 网。排除 special、封装引脚、已有 HBT、既有 `_BOT`/`_TOP` 子网和 MLS 家族。准备阶段还检查实际 OpenDB master terminal 的 CLOCK/POWER/GROUND 类型，保护未在 DEF 中声明 USE 的时钟等网络。
+
+每轮选择 HPWL × 接收端数最大的组，再沿该组最长轴做中位数切分，初始目标组数为 `min(8, ceil(sinks/64))`。源端附近选择一颗根 HBT，每组中位点附近选择一颗叶 HBT；全部落点必须满足输入 lattice、边界及间距。上 die 的一个共享子网连接根与各叶 HBT，底 die 的叶子子网分别连接接收端组。
+
+对于每个接收端，计算源端到根 HBT、根到叶 HBT、叶到接收端的完整 Manhattan 路径。只有满足以下两个条件的接收端才使用跨层分支，其余保留在含原驱动端的 S0 中直接连接：
+
+```text
+完整三段距离 <= 1.05 × 原源端到接收端距离 + 6.4 μm
+本 die 两段距离 + 0.1 × 借用 die 距离 + 25.6 μm <= 原直接距离
+```
+
+这里的 0.1 是候选排序的启发式权重，**不是实际层电阻比**；第二项也不是 STA 时延。固定 RCX 模型与 LEF 的区别见第 6 节。保留在 S0 的接收端按原直接距离计入整网评分，不计算借层节省。全网平均加权距离下降不足 20% 时放弃候选。删除空叶组后重新编号；只剩一个远端组时允许退化为两 HBT 的合法树，无远端组则不共享。
+
+候选按所有接收端的加权距离减少量除以新增 HBT 数量排序，同分按网名排序。实际选择时重新检查已占用站点；找不到完整合法方案或预算不足时保留原网。成功后更新源端、叶子和借用 die 的需求。该过程使用相同规则处理全部用例，不以 case 名称分支。
+
+逐接收端保护来自实际详细布线的反例：未保护方案降低了平均路径电阻，却将一条共享干线上的负载集中起来，并使另一接收端成为新的最坏路径。校验器会从原终端和实际 HBT 坐标独立重建每条受保护路径，不能只信计划里的代理统计。几何保护仍不保证所有实际 RC 路径都改善，最终采用依据是固定 DRT/STA 对照。
+
+### 剩余预算中的双 HBT 共享
+
+原有低扇出方案使用剩余预算。候选必须是非 special 的 SIGNAL 网，pin 数为 2–16，只有一个 OUTPUT driver，其他 pin 均为 INPUT，且所有 pin 属于同一 die。同样排除受保护网、HBT/封装引脚网、既有子网和 MLS 家族；原网 HPWL 至少 40 μm。
 
 对 x、y 两轴分别在最大的 pin 间隙处切分，含 driver 的组为源端组。两个组内 HPWL 之和不得超过原网的 35%。初步评分为：
 
@@ -44,13 +65,15 @@ HPWL(source group + HBT0) + Manhattan(HBT0, HBT1)
 
 这利用了 pin 包围盒内部的平坦最优区间，减少两端各自选最近站点产生的回头绕路。找不到两个相互合法的站点时放弃候选，不输出残缺家族。配置搜索半径为 0 时只检查原目标的最近网格点。
 
-默认最多新增 384 颗 HBT、共享 192 条网，为初版共享规模的 6 倍；总 HBT 数仍限制在保守几何容量的 30% 以内。容量为 `floor(die_width/pitch) × floor(die_height/pitch)`。固定检查器按输入 lattice 计算，可能给出稍大容量；本版保留更严格预算，不消耗超额 HBT。
+多分支与双 HBT 方案共用最多新增 384 颗 HBT、最多共享 192 条网的预算；总 HBT 数仍限制在保守几何容量的 30% 以内。容量为 `floor(die_width/pitch) × floor(die_height/pitch)`。固定检查器按输入 lattice 计算，可能给出稍大容量；本版保留更严格预算，不消耗超额 HBT。
 
-放置后若估计总线长超过原网的 130%，或扣除绕路后的评分低于阈值，就保留原网。报告记录原始 HPWL、共享链路估计、两 die 当前需求及 optional slack。
+对于旧双 HBT 候选，放置后若估计总线长超过原网的 130%，或扣除绕路后的评分低于阈值，就保留原网。多分支使用第 2 节的逐接收端路径保护，不具有这一总 HPWL 上限。报告记录原始 HPWL、共享链路估计、两 die 当前需求及 optional slack。
 
 ## 4. 子网与信号方向
 
-底层网使用以下有向拓扑：
+多分支底层网使用以原驱动端为根的有向树：S0 包含驱动端、保留直连的接收端和根 HBT；S1 位于上 die，连接所有 HBT 的 TOP；S2 及后续子网位于底 die，分别连接一颗叶 HBT 和一个远端组。根使用 HBT_BOTIN，各叶使用 HBT_TOPIN。
+
+原有双 HBT 底层网使用以下有向拓扑：
 
 ```text
 driver group -- S0 BOT -- HBT_BOTIN -- S1 TOP -- HBT_TOPIN -- S2 BOT -- sink group
@@ -59,6 +82,8 @@ driver group -- S0 BOT -- HBT_BOTIN -- S1 TOP -- HBT_TOPIN -- S2 BOT -- sink gro
 三个子网依次命名为 `<original>__MLS__S0__BOT`、`<original>__MLS__S1__TOP`、`<original>__MLS__S2__BOT`；新增实例名为唯一的 `LS_HBT_<id>`。上层网交换 BOT/TOP 和两种 HBT master 的顺序，使 Liberty 方向与信号方向一致。
 
 原网中每个逻辑 pin 恰好转移到一个子网，原网删除。每颗新 HBT 的 BOT/TOP pin 分别接到对应 die 的子网。折叠 HBT 后应恢复原网的完整 terminal 集合和连通性。
+
+通用校验要求 HBT 数为子网数减一、原驱动子网入度为零、其余子网入度为一，且所有子网从驱动端可达；同时检查 HBT master 的输入输出方向、每个终端出现次数、die 归属、命名和几何。官方检查器及最终 HBT 折叠支持这种连通家族，不需要修改固定评估器。
 
 ## 5. 布线与运行开销
 
@@ -76,15 +101,43 @@ driver group -- S0 BOT -- HBT_BOTIN -- S1 TOP -- HBT_TOPIN -- S2 BOT -- sink gro
 
 最终 ODB 必须为当前运行新生成的文件，并由 OpenROAD 重新打开验证。详细布线由固定评估器执行，运行时间比较使用提交入口耗时，不使用评估器包含 DRT 的墙时。内部 `grt.prepare` 包含 `mls.*` 子阶段，各项细分耗时不能直接相加。
 
-## 6. 验证与消融
+## 6. 选择性电阻感知布线
+
+`plan_net_layer_hints.py` 从完整几何清单筛选同 die、单 OUTPUT 驱动的普通 SIGNAL 网。候选 fanout 至少 64、HPWL 至少 200 μm，按 fanout × HPWL 降序最多选择 256 条；同分按网名排序。排除 special、封装引脚、HBT、已拆分/MLS 子网和带已知时钟引脚的网，应用时再检查 MTerm 的 CLOCK/POWER/GROUND 类型以及路由器最终识别的 signal type。筛选统一使用输入特征，不依赖公开 case 名称。它是负载与长度代理，不能称为实测时序关键度。
+
+单进程的 `GRT_HIGH_FANOUT_LAYERS=1` 开启选网；`GRT_HIGH_FANOUT_POLICY=resistance` 将所选网传给原生 `set_net_resistance_aware`。每次 die 路由前清除前一次集合，保持底层 metal2–10、上层 metal11–20 的完整主干硬区间。FastRoute 的层分配和适用的 3D 重布线对这些网使用已有 wire/via 电阻代价，其余网不启用该标记；保持原普通网排序和重布线阈值。不会触发原生自动 RA 的全局 slack 排名、时钟优先排序或自动扩选。路由资源竞争仍可能间接改变未选择网的 guide，因此不能承诺时钟 guide 逐字节不变。
+
+该代价沿用原生 LEF 的层宽、sheet resistance 和 via resistance，不是包含负载电容与完整 cell delay 的 Elmore/STA 目标。它可能增加 via 和局部拥塞，必须通过固定评估器判断。原生 3D maze 的处理范围与绕线惩罚仍在，不能保证每条所选网都接受 3D 重布线。`GRT_SELECTIVE_RA` 日志记录实际激活数，入口 manifest 的 `grt_resistance_hint_counts` 记录两 die 的应用数量。
+
+实际评测模型与这些 LEF 电阻存在重要差异。本轮官方 `6_report.log` 明确加载输入平台的 `nangate45_3D.rules`，而非同目录的 `rcx_patterns.rules`。前者的默认宽度电阻表按奇数/偶数层分别使用相同系数；例如 metal3、11、13、15 均为 0.00253571，metal2、12 为 0.0015。在本轮最终 DEF/SPEF 中，384 μm 的 metal15 主干加 0.14 μm 宽度修正后得到 974.068 Ω，与该 RCX 系数吻合；其他层也完成了同网数值交叉核对。因此，LEF 中 metal15 与 metal11 的 40 倍单位电阻差异不能用来预测本平台的最终时序收益，也不能将论文中的低阻借层收益直接迁移到本评测。该发现只用于修正优化依据，未修改平台规则或固定评估器。
+
+`GRT_HIGH_FANOUT_POLICY=layers` 是另一项独立消融：所选网主干限制为底层 metal4–10、上层 metal11–17，并与原 die 窗口求交。这一固定选层策略和选择性电阻代价并不等价。`GRT_HIGH_FANOUT_LAYERS=0` 关闭两者。独立进程回退流程不应用这些新选网策略。原生 `global_route -resistance_aware` 仍为自动选网模式；同时指定自动模式与显式网集合会报错，避免无声改变实验范围。
+
+同时修复 FastRoute 的跨 pass 技术层缓存：每次 `preProcessTechLayers()` 清空后按当前层数重建，避免底 die 的 10 层缓存留在前缀、上 die 扩展到 20 层时把 metal11 错当 metal1。关闭 RA 时旧电阻代价为零，原来的纯几何路由没有暴露这一问题。回归测试直接执行实际 C++ 函数，验证 10→20→10 层重建；新二进制关闭选网后的官方 bp_fe canonical DEF/guide 与 v3 相同。
+
+## 7. 可选完整路径保护与运行优化
+
+第 2 节的多分支接收端保护默认启用。另有针对既有 HBT 重定位和旧双 HBT 共享的可选路径保护，默认关闭：重定位时重建唯一普通驱动端到各 sink 的完整跨 die Manhattan 路径，保护方向含糊或多 HBT 的网；旧共享候选则比较原直接路径与经过两个 HBT 的三段路径。独立消融配置要求既有路径不增长、旧共享路径不超过原来的 1.05 倍加 6.4 μm。这仍不保证实际 RC 时延或详细绕线长度不增长。
+
+单进程默认直接从原 DEF、相同 LEF/Liberty/SDC/RC 初始化，省略初始 ODB 写入与重读；默认不保存准备后的 ODB 检查点。最终完整 ODB 仍必须写出并独立重开。`GRT_INPUT_MODE=odb` 和 `GRT_SAVE_CHECKPOINTS=1` 可恢复中间产物，独立进程自动选择 ODB 输入。
+
+分类缓存按固定批次生成 JSON 和校验摘要，保留原顺序、编码与完整性检查。层归属和严格连通性两项只读检查默认并行，单线程请求时自动串行；任一项失败仍阻止发布。`GRT_CHECK_MODE=serial` 可关闭并行。`grt.check_guide_layers` 与 `grt.check_guide_connectivity` 的子项时间相互重叠，整个检查墙时为 `grt.check_guides`。
+
+## 8. 参考文献与迁移边界
+
+赛题的 [MLS 论文](https://gtcad.gatech.edu/www/papers/gtcad-tvlsi22-a.pdf) 和 [Open3DBench](https://arxiv.org/html/2503.12946v1) 提供了 F2F 金属层共享、HBT 与连接树优化的思路。本版多分支、局部直连和路径保护是结合实际服务器反例形成的实现，没有复现论文全部优化器，也不引用论文收益作为本提交收益。尤其不能将文献中的物理低阻借层优势直接等同于当前固定 RCX 模型的收益。
+
+[H3D](https://www.cse.cuhk.edu.hk/~byu/papers/C297-ICCAD2025-3DRoute.pdf) 的连续最优区域与合法 HBT 候选思想，与本项目已有凸区间/离散落点搜索相关；完整树动态规划尚未实现。[CUGR](https://cwpui.com/doc/c10.pdf) 提示应关注 via/pin access 和详细布线可行性；其局部 guide patch 未并入本版。[FastRoute](https://onlinelibrary.wiley.com/doi/10.1155/2012/608362) 的局部拥塞反馈不能等同于统一放宽容量。本轮固定 DRT 对照已经淘汰了全局放宽容量、固定 M4 下界和原生自动 RA 等退化候选。
+
+## 9. 验证与消融
 
 Python 检查新旧 HBT 的数量、边界、制造网格、lattice 余数与间距，以及原始 terminal 集合、子网图连通性、命名和信号方向。Tcl 应用后检查所有非 HBT 的 master、位置、方向、placement 状态，以及封装引脚几何与连接。
 
 使用固定检查器验证 canonical DEF/guide。全部公开用例的准备阶段检查与完整 GRT/DRT/STA 分开记录；几何检查通过不能替代正式评测。
 
-51 项 Python 回归测试覆盖共享与重定位约束、封装引脚分类、严格检查边界和缓存回退，包括普通 pins 分属不同组件、矩形顺序、层名大小写、过期 DEF、损坏 payload 和错误 schema/类型。另以 1,000 组随机几何对照旧实现，完整诊断字段及 3D 组件 ID 一致。
+回归测试覆盖共享与重定位约束、路径保护、封装引脚分类、严格检查边界、缓存回退、并行检查失败传播，以及实际 C++/Tcl 的技术层重建和选择性 RA 状态隔离。此前还以 1,000 组随机几何对照旧检查实现，完整诊断字段及 3D 组件 ID 一致。当前测试数量和新二进制的官方验证范围见 `VALIDATION.md`。
 
-原生导出在官方 `20260914` 镜像中与 Tcl 对照：bp_fe 实际输入的 37,248 个网、113,496 个 pins，以及转义、负半整数、缺失几何、混合 die BPin 等边界样例均一致；bp_quad 使用相同输入 ODB 对照此前保存的 Tcl manifest，1,363,004 个网、4,158,170 个 pins 的全部记录及顺序一致。微基准中 bp_fe 导出为 Tcl 3.138 秒、原生 0.186 秒；bp_quad 原生单线程导出 9.745 秒，加载与完整对照总墙时 62.898 秒，其中没有重跑 Tcl 导出。
+第三版已在官方 `20260914` 镜像中对照原生/Tcl 导出：bp_fe 输入的 37,248 个网、113,496 个 pins，以及转义、负半整数、缺失几何、混合 die BPin 等边界样例均一致；bp_quad 使用相同输入 ODB 对照此前保存的 Tcl manifest，1,363,004 个网、4,158,170 个 pins 的全部记录及顺序一致。该次微基准中 bp_fe 导出为 Tcl 3.138 秒、原生 0.186 秒；bp_quad 原生单线程导出 9.745 秒，加载与完整对照总墙时 62.898 秒，其中没有重跑 Tcl 导出。第四版新编译二进制又用准备后的 bp_fe ODB 对照，37,632 个网、114,264 个 pins 及新增边界 fixtures 全部逐字段一致。
 
 使用既有第二版官方容器的 bp_fe/bp_quad 产物对照严格诊断，完整诊断输出与退出状态一致；全量分类、违规结果、CLI 输出和三份网列表也一致。微基准中严格诊断耗时分别从 2.594/96.234 秒降至 0.940/29.575 秒，bp_quad 峰值 RSS 从约 7.08 GiB 降至 0.50 GiB；复用分类缓存的 bp_quad 逐层检查从流式解析的 59.819 秒降至 24.721 秒。以上是在共享宿主上测量各工具的微基准，不能代替完整入口耗时或固定 DRT/DRC/STA 的质量与评分结果；证据分别保存在 `reports/optimization_v3` 下的 `native_export`、`diagnostics` 和 `classification_cache`。
 

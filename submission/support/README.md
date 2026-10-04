@@ -75,4 +75,6 @@ python3 submission/support/compare_metrics.py \
 
 第三版真实官方 20260914 实验使用 `run_official_experiments.py`、`verify_official_experiments.py` 和 `capture_official_build_reference.py`。公开二进制只在九个 overlay 文件 SHA 全部一致时复用；增量构建必须提供已验证完整构建的父报告 SHA 和子构建的真实源码摘要。
 
+`--cases` 指定本轮 GRT 与官方合法性检查的 case；`--evaluate-cases` 指定其中进一步运行完整官方 DRT 两轮和最终 STA 的 case，默认仅 `bp_fe`。例如 `--cases bp_fe bp_multi --evaluate-cases bp_fe bp_multi` 会对两例都做完整评测；`--grt-only` 跳过全部 DRT/STA，不能同时指定 `--evaluate-cases`。旧 plan 未包含此字段时仍保留原来的 bp_fe 评测行为。每个任务的 GRT 和 DRT/STA 使用相同 `--threads`，默认 8，范围 1–32；例如 `--jobs 1 --threads 32` 可做单任务 32 线程评测。`--jobs` 上限为 4，且 `jobs × threads` 不得超过 32；启动时统一计入 `reports/optimization_v*` 下仍活跃的实验线程预算。结果会核对 GRT manifest 与底层、上层 DRT 日志中的实际线程数。
+
 官方质量指标复用代码已移除：历史报告缺少评测当时完整平台文件摘要。`--reuse-quality` 和旧复用 plan 都拒绝。最终质量必须来自实际官方 DRT2/STA；本页前面的 `--reuse-report` 仅属于旧版本地原生实验工具，不能作为官方容器验证证据。

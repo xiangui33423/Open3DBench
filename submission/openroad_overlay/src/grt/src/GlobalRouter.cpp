@@ -541,7 +541,7 @@ void GlobalRouter::startIncremental()
 void GlobalRouter::endIncremental(bool save_guides)
 {
   is_incremental_ = true;
-  fastroute_->setResistanceAware(resistance_aware_);
+  configResistanceAware();
   updateDirtyRoutes(save_guides);
   grouter_cbk_->removeOwner();
   delete grouter_cbk_;
@@ -1750,6 +1750,11 @@ void GlobalRouter::makeFastrouteNet(Net* net)
                                      net->getSlack(),
                                      edge_cost_per_layer,
                                      net->areSegmentsRestored());
+  if (!resistance_aware_) {
+    // STA may discover and mark clocks after the explicit selection was made.
+    fr_net->setIsResAware(net->getSignalType() == odb::dbSigType::SIGNAL
+                         && resistance_aware_nets_.contains(net->getDbNet()));
+  }
   // TODO: improve net layer range with more dynamic layer restrictions
   // when there's no room in the specified range
   // See https://github.com/The-OpenROAD-Project/OpenROAD/pull/2893 and
@@ -1830,6 +1835,19 @@ void GlobalRouter::setNetRoutingLayerRange(odb::dbNet* db_net,
 void GlobalRouter::clearNetRoutingLayerRanges()
 {
   net_routing_layer_ranges_.clear();
+}
+
+void GlobalRouter::setNetResistanceAware(odb::dbNet* db_net)
+{
+  if (db_net == nullptr) {
+    logger_->error(GRT, 724, "Cannot select a null net for resistance-aware routing.");
+  }
+  resistance_aware_nets_.insert(db_net);
+}
+
+void GlobalRouter::clearNetResistanceAware()
+{
+  resistance_aware_nets_.clear();
 }
 
 bool GlobalRouter::getNetRoutingLayerRange(odb::dbNet* db_net,
@@ -2629,7 +2647,7 @@ void GlobalRouter::configFastRoute()
   fastroute_->setVerbose(verbose_);
   fastroute_->setOverflowIterations(congestion_iterations_);
   fastroute_->setCongestionReportIterStep(congestion_report_iter_step_);
-  fastroute_->setResistanceAware(resistance_aware_);
+  configResistanceAware();
 
   if (congestion_file_name_ != nullptr) {
     fastroute_->setCongestionReportFile(congestion_file_name_);
@@ -2642,6 +2660,18 @@ void GlobalRouter::configFastRoute()
         "Timing is not available, setting critical nets percentage to 0.");
     fastroute_->setCriticalNetsPercentage(0);
   }
+}
+
+void GlobalRouter::configResistanceAware()
+{
+  if (resistance_aware_ && !resistance_aware_nets_.empty()) {
+    logger_->error(GRT,
+                   725,
+                   "Explicit resistance-aware nets cannot be combined with "
+                   "global_route -resistance_aware.");
+  }
+  fastroute_->setResistanceAware(resistance_aware_,
+                                  !resistance_aware_nets_.empty());
 }
 
 void GlobalRouter::getMinMaxLayer(int& min_layer, int& max_layer)

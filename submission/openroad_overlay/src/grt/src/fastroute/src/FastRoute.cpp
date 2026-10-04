@@ -1905,7 +1905,7 @@ NetRouteMap FastRouteCore::run()
 
   if (past_cong == 0) {
     // Increase ripup threshold if res-aware is enabled
-    if (enable_resistance_aware_) {
+    if (enable_resistance_aware_ && !selective_resistance_aware_) {
       long_edge_len = BIG_INT;
       short_edge_len = BIG_INT;
     }
@@ -2085,10 +2085,12 @@ void FastRouteCore::setCongestionReportIterStep(int congestion_report_iter_step)
   congestion_report_iter_step_ = congestion_report_iter_step;
 }
 
-void FastRouteCore::setResistanceAware(bool resistance_aware)
+void FastRouteCore::setResistanceAware(bool resistance_aware, bool selective)
 {
-  enable_resistance_aware_ = resistance_aware;
-  en_estimate_parasitics_ = true;
+  enable_resistance_aware_ = resistance_aware || selective;
+  selective_resistance_aware_ = selective;
+  resistance_aware_ = false;
+  en_estimate_parasitics_ = !selective;
 }
 
 void FastRouteCore::setCongestionReportFile(const char* congestion_file_name)

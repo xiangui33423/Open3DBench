@@ -193,6 +193,58 @@ class HbtOptimizerTest(unittest.TestCase):
     def test_deterministic(self):
         self.assertEqual(optimize_hbts(example()), optimize_hbts(example()))
 
+    def test_complete_path_guard_keeps_hpwl_gain_without_stretching_a_sink_path(self):
+        design = example()
+        design["hbts"][0].update(x=96500, y=96500)
+        driver = pin("driver_bottom", "Z", 70000, 161000, "bottom")
+        driver["io"] = "OUTPUT"
+        design["nets"] = [
+            net("cross_BOT", [driver,
+                pin("local_bottom", "A", 149000, 43000, "bottom"),
+                pin("HBT_0", "BOT", 96500, 96500, "bottom", True)]),
+            net("cross_TOP", [pin("HBT_0", "TOP", 96500, 96500, "upper", True),
+                pin("sink0_upper", "A", 104000, 164000, "upper"),
+                pin("sink1_upper", "A", 131000, 170000, "upper"),
+                pin("sink2_upper", "A", 158000, 26000, "upper")]),
+        ]
+        def paths(design):
+            first, second = design["nets"]
+            source = first["pins"][0]
+            hin, hout = first["pins"][-1], second["pins"][0]
+            dist = lambda a, b: abs(a["x"] - b["x"]) + abs(a["y"] - b["y"])
+            return [dist(source, hin) + dist(hout, sink) for sink in second["pins"][1:]]
+        original = paths(design)
+        legacy, _moves, legacy_stats = optimize_hbts(design)
+        self.assertTrue(any(a > b for a, b in zip(paths(legacy), original)))
+        for reversed_hbt_io in (False, True):
+            # Original public HBT master directions can disagree with their
+            # ordinary terminals; the latter define the signal direction.
+            if reversed_hbt_io:
+                design["nets"][0]["pins"][-1]["io"] = "OUTPUT"
+                design["nets"][1]["pins"][0]["io"] = "INPUT"
+            guarded, moves, stats = optimize_hbts(design, {"path_max_growth_fraction": 0.0})
+            self.assertTrue(all(a <= b for a, b in zip(paths(guarded), original)))
+            self.assertEqual(stats["saved_hpwl_um"], legacy_stats["saved_hpwl_um"])
+            self.assertEqual(stats["path_guard"]["guarded_paths"], 3)
+            self.assertGreater(stats["path_guard"]["rejected_candidates"], 0)
+            self.assert_preserved(design, guarded, moves, stats)
+
+    def test_path_guard_protects_ambiguous_direction_and_shared_hbt_topology(self):
+        design = example()  # The generic geometry fixture has no OUTPUT.
+        result, moves, stats = optimize_hbts(design, {"path_max_growth_fraction": 0.0})
+        self.assertEqual(result, design)
+        self.assertEqual(moves, [])
+        self.assertEqual(stats["skipped"]["ambiguous_cross_die_path"], 1)
+        design["nets"][0]["pins"][0]["io"] = "OUTPUT"
+        design["hbts"].append({"name": "HBT_extra", "x": 70900, "y": 70900})
+        design["nets"][1]["pins"].append(pin("HBT_extra", "TOP", 70900, 70900, "upper", True))
+        self.assertEqual(optimize_hbts(design, {"path_max_growth_fraction": 0.0})[1], [])
+
+    def test_disabled_path_guard_retains_legacy_geometry(self):
+        self.assertEqual(optimize_hbts(example()),
+                         optimize_hbts(example(), {"path_max_growth_fraction": None,
+                                                   "path_max_growth_um": 17.0}))
+
     @unittest.skipUnless(shutil.which("tclsh"), "Tcl interpreter is unavailable")
     def test_emitted_relocation_unlocks_cover_instance_before_moving(self):
         # OpenDB refuses setOrigin on COVER instances (ODB-0359). Exercise
@@ -244,7 +296,9 @@ proc mock_inst {method args} {
         with self.assertRaisesRegex(ValueError, "pitch lattice"):
             optimize_hbts(design)
         for config in ({"passes": -1}, {"max_moves": True}, {"enabled": "false"},
-                       {"min_improvement_um": float("nan")}, {"unknown_key": 1}):
+                       {"min_improvement_um": float("nan")}, {"unknown_key": 1},
+                       {"path_max_growth_fraction": -0.1}, {"path_max_growth_fraction": True},
+                       {"path_max_growth_um": float("inf")}, {"path_max_growth_um": None}):
             with self.subTest(config=config):
                 with self.assertRaises(ValueError):
                     optimize_hbts(example(), config)

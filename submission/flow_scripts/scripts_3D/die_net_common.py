@@ -11,6 +11,7 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import islice
 
 BOTTOM_MAX_LAYER = 10
 UPPER_MIN_LAYER = 11
@@ -51,10 +52,26 @@ def def_sha256(def_path: Path) -> str:
 def classification_payload_sha256(classification: dict[str, str]) -> str:
     """Hash every classification in its original DEF insertion order."""
     digest = hashlib.sha256()
-    encoder = json.JSONEncoder(ensure_ascii=True, separators=(",", ":"))
-    for chunk in encoder.iterencode(classification):
+    for chunk in iter_classification_json(classification):
         digest.update(chunk.encode("utf-8"))
     return digest.hexdigest()
+
+
+def iter_classification_json(classification: dict[str, str]) -> Iterator[str]:
+    """Encode the complete ordered map in bounded C-encoder batches.
+
+    JSONEncoder.iterencode emits several Python fragments per net. Batching
+    small ordered dictionaries produces identical compact JSON bytes while
+    avoiding millions of Python hash/write calls and a whole-design buffer.
+    """
+    yield "{"
+    entries = iter(classification.items())
+    separator = ""
+    while batch := dict(islice(entries, 4096)):
+        encoded = json.dumps(batch, ensure_ascii=True, separators=(",", ":"))
+        yield separator + encoded[1:-1]
+        separator = ","
+    yield "}"
 
 
 def write_classification_cache(
@@ -72,7 +89,6 @@ def write_classification_cache(
         "schema_version": CLASSIFICATION_CACHE_VERSION,
         "def_sha256": input_digest,
         "payload_sha256": classification_payload_sha256(classification),
-        "classification": classification,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: str | None = None
@@ -82,8 +98,11 @@ def write_classification_cache(
             suffix=".tmp", delete=False,
         ) as stream:
             temporary = stream.name
-            json.dump(record, stream, ensure_ascii=True, separators=(",", ":"))
-            stream.write("\n")
+            stream.write(json.dumps(record, ensure_ascii=True, separators=(",", ":"))[:-1])
+            stream.write(',"classification":')
+            for chunk in iter_classification_json(classification):
+                stream.write(chunk)
+            stream.write("}\n")
         os.replace(temporary, path)
         temporary = None
     finally:

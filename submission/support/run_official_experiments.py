@@ -53,7 +53,9 @@ def archive_directory(source: Path, output: Path) -> None:
 
 def active_reservations() -> list[dict]:
     active = []
-    for path in (REPOSITORY / 'reports/optimization_v3').rglob('host_experiment.json'):
+    paths = (path for directory in sorted((REPOSITORY / 'reports').glob('optimization_v*'))
+             if directory.is_dir() for path in directory.rglob('host_experiment.json'))
+    for path in paths:
         record = json.loads(path.read_text())
         if record.get('status') not in ('reserved', 'running'):
             continue
@@ -72,7 +74,7 @@ def active_reservations() -> list[dict]:
             reserved = record.get('reserved_threads')
             if reserved is None:
                 old_plan = json.loads((path.parent / 'prepared_plan.json').read_text())
-                reserved = max(old_plan['jobs'] * 8, old_plan['build_threads'] if any(not item['reuse_verified_binary_expected'] for item in old_plan['candidates'].values()) else 0)
+                reserved = max(old_plan['jobs'] * old_plan.get('threads', 8), old_plan['build_threads'] if any(not item['reuse_verified_binary_expected'] for item in old_plan['candidates'].values()) else 0)
             active.append({'host_record': str(path), 'threads': reserved, 'external_threads': record.get('external_threads', 0)})
     return active
 
@@ -87,7 +89,9 @@ def main() -> int:
     parser.add_argument('--reference', type=Path, default=REPOSITORY / 'reports/optimization_v3/baseline_reference.json')
     parser.add_argument('--output-root', type=Path, default=REPOSITORY / 'reports/optimization_v3/experiments')
     parser.add_argument('--cases', nargs='+', default=['bp_fe'])
+    parser.add_argument('--evaluate-cases', nargs='+', help='Cases receiving fresh fixed DRT/STA (default: bp_fe); must be included in --cases')
     parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--threads', type=int, default=8, help='Threads per candidate for both GRT and fixed DRT/STA (default: 8)')
     parser.add_argument('--build-threads', type=int, default=32)
     parser.add_argument('--external-threads', type=int, default=0, help='Reserve budget for independently launched builds/jobs outside this tool')
     parser.add_argument('--grt-only', action='store_true', help='Omit detailed evaluation; canonical legality still runs')
@@ -96,21 +100,25 @@ def main() -> int:
     args = parser.parse_args()
     if args.reuse_quality:
         parser.error('Official quality reuse is disabled: historical evaluation-time full platform collateral fingerprints are unavailable; request fresh evaluation')
-    if not 1 <= args.jobs <= 4 or not 1 <= args.build_threads <= 32 or not 0 <= args.external_threads <= 32:
-        parser.error('jobs must be 1..4 (8 threads each); build-threads must be 1..32')
+    if (not 1 <= args.jobs <= 4 or not 1 <= args.threads <= 32 or args.jobs * args.threads > 32
+            or not 1 <= args.build_threads <= 32 or not 0 <= args.external_threads <= 32):
+        parser.error('jobs must be 1..4; threads and build-threads must be 1..32; jobs * threads must be <=32')
     if len(set(args.cases)) != len(args.cases) or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', case) for case in args.cases):
         parser.error('Choose distinct safe case names')
-    if not args.grt_only and 'bp_fe' not in args.cases:
-        parser.error('Full official DRT evaluates bp_fe; include bp_fe or use --grt-only')
+    if args.grt_only and args.evaluate_cases:
+        parser.error('--evaluate-cases cannot be combined with --grt-only')
     try:
         if args.plan:
-            if args.candidate or args.config or args.baseline or args.reuse_quality or args.canonical_gate:
+            if args.candidate or args.config or args.baseline or args.reuse_quality or args.canonical_gate or args.evaluate_cases:
                 raise ValueError('--plan cannot be combined with candidate/config/baseline capture')
             plan_path = args.plan.resolve(strict=True)
             plan = json.loads(plan_path.read_text()); run = plan_path.parent
             if any(item.get('reuse_quality') for item in plan['candidates'].values()):
                 raise ValueError('Prepared quality-reuse plans are disabled until full evaluation-time platform collateral identity is proven; prepare a fresh evaluation plan')
         else:
+            evaluate_cases = [] if args.grt_only else (args.evaluate_cases or ['bp_fe'])
+            if len(set(evaluate_cases)) != len(evaluate_cases) or set(evaluate_cases) - set(args.cases):
+                raise ValueError('Evaluation cases must be distinct and included in --cases; use --grt-only to omit DRT/STA')
             candidates = pairs(args.candidate); configs = pairs(args.config); gates = pairs(args.canonical_gate)
             if not candidates: raise ValueError('At least one --candidate label=path is required')
             if set(configs) - set(candidates) or set(args.baseline) - set(candidates) or set(gates) - set(candidates):
@@ -130,8 +138,8 @@ def main() -> int:
             plan = {'scope': 'captured_official_candidate_plan', 'status': 'prepared', 'batch': batch,
                     'created_utc': datetime.now(timezone.utc).isoformat(), 'source_commit_at_capture': revision.stdout.strip(),
                     'baseline': translate(reference), 'input_root': translate(reference['input_root']),
-                    'cases': args.cases, 'threads': 8, 'jobs': args.jobs, 'build_threads': args.build_threads,
-                    'grt_only': args.grt_only, 'candidates': {},
+                    'cases': args.cases, 'threads': args.threads, 'jobs': args.jobs, 'build_threads': args.build_threads,
+                    'grt_only': args.grt_only, 'evaluate_cases': evaluate_cases, 'candidates': {},
                     'driver_sha256': digest(run / 'verify_official_experiments.py'), 'common_sha256': digest(run / 'official_common.py')}
             for label, original in candidates.items():
                 if not original.is_relative_to(REPOSITORY): raise ValueError('Candidate sources must be in the repository')
@@ -194,7 +202,7 @@ def main() -> int:
             '-w', str(CONTAINER_REPOSITORY), '--entrypoint', '/usr/bin/python3', image['Id'],
             container_run + '/verify_official_experiments.py', '--plan', container_path(plan_path),
             '--expected-plan-sha256', digest(plan_path)]
-        reserved = max(plan['jobs'] * 8, plan['build_threads'] if any(not item['reuse_verified_binary_expected'] for item in plan['candidates'].values()) else 0)
+        reserved = max(plan['jobs'] * plan.get('threads', 8), plan['build_threads'] if any(not item['reuse_verified_binary_expected'] for item in plan['candidates'].values()) else 0)
         host = {'scope': 'official_container_experiment_host', 'status': 'queued', 'image_id': image['Id'],
                 'prepared_plan_sha256': digest(plan_path), 'command': command, 'host_pid': os.getpid(),
                 'reserved_threads': reserved, 'external_threads': args.external_threads,

@@ -101,7 +101,7 @@ class FastRouteCore
   void addHCapacity(int16_t horizontalCapacity, int layer);
   void setLowerLeft(int x, int y);
   void setTileSize(int size);
-  void setResistanceAware(bool resistance_aware);
+  void setResistanceAware(bool resistance_aware, bool selective = false);
   void addLayerDirection(int layer_idx, const odb::dbTechLayerDir& direction);
   FrNet* addNet(odb::dbNet* db_net,
                 bool is_clock,
@@ -645,6 +645,7 @@ class FastRouteCore
   bool en_estimate_parasitics_ = false;
   bool resistance_aware_ = false;
   bool enable_resistance_aware_ = false;
+  bool selective_resistance_aware_ = false;
   bool is_3d_step_ = false;
   bool is_incremental_grt_ = false;
   float worst_slack_;

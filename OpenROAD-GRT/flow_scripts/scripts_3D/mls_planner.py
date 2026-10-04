@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import median_low
@@ -19,6 +20,17 @@ from statistics import median_low
 
 DEFAULT_CONFIG = {
     "enabled": True,
+    "multi_branch_enabled": False,
+    "multi_branch_sink_guard": True,
+    "multi_branch_max_path_growth_fraction": 0.05,
+    "multi_branch_max_path_growth_um": 6.4,
+    "multi_branch_min_fanout": 128,
+    "multi_branch_min_hpwl_um": 400.0,
+    "multi_branch_max_groups": 8,
+    "multi_branch_target_sinks": 64,
+    "multi_branch_borrowed_r_ratio": 0.10,
+    "multi_branch_access_cost_um": 25.6,
+    "multi_branch_min_proxy_gain": 0.20,
     "pitch_um": 6.4,
     "capacity_fraction": 0.30,
     "max_new_hbts": 384,
@@ -39,6 +51,10 @@ DEFAULT_CONFIG = {
     "relocation_radius": 2,
     "relocation_max_moves": 65536,
     "relocation_min_improvement_um": 0.1,
+    "relocation_path_max_growth_fraction": None,
+    "relocation_path_max_growth_um": 0.0,
+    "sharing_path_max_detour_fraction": None,
+    "sharing_path_max_detour_um": 0.0,
 }
 
 
@@ -68,7 +84,7 @@ def config_values(overrides=None):
         if unknown:
             raise ValueError(f"Unknown MLS configuration keys: {sorted(unknown)}")
         values.update(overrides)
-    for key in ("enabled", "dynamic_demand", "joint_site_placement", "relocation_enabled"):
+    for key in ("enabled", "dynamic_demand", "joint_site_placement", "relocation_enabled", "multi_branch_enabled", "multi_branch_sink_guard"):
         if not isinstance(values[key], bool):
             raise ValueError(f"{key} must be a JSON boolean")
     for key in ("pitch_um", "min_span_um"):
@@ -96,6 +112,30 @@ def config_values(overrides=None):
         raise ValueError("relocation_min_improvement_um must be nonnegative")
     if values["hbt_cost_um"] < 0:
         raise ValueError("hbt_cost_um must be nonnegative")
+    for key in ("relocation_path_max_growth_fraction", "relocation_path_max_growth_um",
+                "sharing_path_max_detour_fraction", "sharing_path_max_detour_um"):
+        value = values[key]
+        if key.endswith("fraction") and value is None:
+            continue
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or value < 0):
+            raise ValueError(f"{key} must be finite and nonnegative")
+    for key in ("multi_branch_min_fanout", "multi_branch_target_sinks"):
+        if isinstance(values[key], bool) or not isinstance(values[key], int) or values[key] < 2:
+            raise ValueError(f"{key} must be an integer >= 2")
+    if (isinstance(values["multi_branch_max_groups"], bool)
+            or not isinstance(values["multi_branch_max_groups"], int)
+            or not 2 <= values["multi_branch_max_groups"] <= 8):
+        raise ValueError("multi_branch_max_groups must be an integer in [2, 8]")
+    for key in ("multi_branch_min_hpwl_um", "multi_branch_access_cost_um",
+                "multi_branch_max_path_growth_fraction", "multi_branch_max_path_growth_um"):
+        if (isinstance(values[key], bool) or not isinstance(values[key], (int, float))
+                or not math.isfinite(values[key]) or values[key] < 0):
+            raise ValueError(f"{key} must be finite and nonnegative")
+    for key in ("multi_branch_borrowed_r_ratio", "multi_branch_min_proxy_gain"):
+        if (isinstance(values[key], bool) or not isinstance(values[key], (int, float))
+                or not math.isfinite(values[key]) or not 0 < values[key] < 1):
+            raise ValueError(f"{key} must be finite and in (0, 1)")
     return values
 
 
@@ -236,10 +276,22 @@ class HbtSites:
         return points[0] if points else None
 
 
-def place_pair(sites, a, b, pa, pb, radius, joint):
+def place_pair(sites, a, b, pa, pb, radius, joint, path_guard=None):
+    def paths_legal(p0, p1):
+        if path_guard is None:
+            return True
+        driver, fraction, allowance = path_guard
+        source = (driver["x"], driver["y"])
+        trunk = distance(source, p0) + distance(p0, p1)
+        return all(trunk + distance(p1, (sink["x"], sink["y"]))
+                   <= distance(source, (sink["x"], sink["y"])) * (1 + fraction) + allowance
+                   for sink in b)
+
     if not joint or radius == 0:
         p0 = sites.nearest(pa, radius)
         p1 = sites.nearest(pb, radius, [p0]) if p0 is not None else None
+        if p1 is not None and not paths_legal(p0, p1):
+            return None, None
         return p0, p1
     # A bbox's interior is a flat optimum for HPWL. Search the corner facing
     # the other cluster as well as the median, then optimize the complete chain.
@@ -252,7 +304,7 @@ def place_pair(sites, a, b, pa, pb, radius, joint):
     for p0 in first:
         local_a = hpwl(a + [{"x": p0[0], "y": p0[1]}])
         for p1 in second:
-            if not sites.legal(p1, [p0]):
+            if not sites.legal(p1, [p0]) or not paths_legal(p0, p1):
                 continue
             cost = local_a + distance(p0, p1) + hpwl(b + [{"x": p1[0], "y": p1[1]}])
             options.append((cost, distance(p0, pa) + distance(p1, pb), p0, p1))
@@ -264,7 +316,7 @@ def place_pair(sites, a, b, pa, pb, radius, joint):
 
 def candidate(net, config, dbu, demand):
     pins = net["pins"]
-    if (net.get("special") or net.get("signal_type", "SIGNAL") != "SIGNAL"
+    if (net.get("protected") or net.get("special") or net.get("signal_type", "SIGNAL") != "SIGNAL"
             or "__MLS__" in net["name"] or not 2 <= len(pins) <= config["max_fanout"]):
         return None, "type_or_fanout"
     if net["name"].endswith(("_BOT", "_TOP")):
@@ -313,6 +365,149 @@ def candidate(net, config, dbu, demand):
     return best, None
 
 
+
+def geometric_sink_groups(sinks, count):
+    """Stable recursive median partition; split the largest geometric spread."""
+    key = lambda p: (p["x"], p["y"], p["inst"], p["pin"])
+    groups = [sorted(sinks, key=key)]
+    while len(groups) < count:
+        choices = [(hpwl(group) * len(group), len(group), -i, i)
+                   for i, group in enumerate(groups) if len(group) >= 2]
+        if not choices:
+            break
+        index = max(choices)[-1]
+        group = groups.pop(index)
+        xl, yl, xh, yh = bbox(group)
+        axis = "x" if xh - xl >= yh - yl else "y"
+        ordered = sorted(group, key=lambda p: (p[axis], *key(p)))
+        middle = len(ordered) // 2
+        groups[index:index] = [ordered[:middle], ordered[middle:]]
+    return sorted(groups, key=lambda group: (*center(group), key(group[0])))
+
+
+def branch_candidate(net, config, dbu, sites):
+    """Geometry/resistance proxy only: no claimed STA or routed-tree estimate."""
+    pins = net["pins"]
+    if (net.get("protected") or net.get("special") or net.get("bterms")
+            or net.get("signal_type", "SIGNAL") != "SIGNAL"
+            or "__MLS__" in net["name"] or net["name"].endswith(("_BOT", "_TOP"))
+            or any(p.get("hbt") or p["inst"] == "PIN"
+                   or p["inst"].startswith(("HBT_", "LS_HBT_")) for p in pins)):
+        return None
+    # The first candidate only borrows the lightly used upper metal pool.
+    if {p.get("die") for p in pins} != {"bottom"}:
+        return None
+    drivers = [p for p in pins if p.get("io") == "OUTPUT"]
+    sinks = [p for p in pins if p.get("io") == "INPUT"]
+    if (len(drivers) != 1 or len(sinks) + 1 != len(pins)
+            or len(sinks) < config["multi_branch_min_fanout"]
+            or hpwl(pins) < config["multi_branch_min_hpwl_um"] * dbu):
+        return None
+    slack = net.get("slack_ns")
+    if slack is not None and (not math.isfinite(slack) or slack < config["min_slack_ns"]):
+        return None
+    count = min(config["multi_branch_max_groups"],
+                max(2, math.ceil(len(sinks) / config["multi_branch_target_sinks"])))
+    groups = geometric_sink_groups(sinks, count)
+    driver = drivers[0]
+    source = driver["x"], driver["y"]
+    roots = sites.nearby(source, config["search_radius"], limit=1)
+    if not roots:
+        return None
+    positions = [roots[0]]
+    for group in groups:
+        candidates = sites.nearby(center(group), config["search_radius"], positions, limit=1)
+        if not candidates:
+            return None
+        positions.append(candidates[0])
+    root = positions[0]
+    source_access = distance(source, root) / dbu
+    rows, local_sinks, remote_groups, remote_positions = [], [], [], [root]
+    protected_by = Counter()
+    remote_max_path_growth_um = 0.0
+    for group, leaf in zip(groups, positions[1:]):
+        upper = distance(root, leaf) / dbu
+        remote = []
+        for pin in group:
+            point = pin["x"], pin["y"]
+            native = source_access + distance(leaf, point) / dbu
+            baseline = distance(source, point) / dbu
+            weighted = (native + config["multi_branch_borrowed_r_ratio"] * upper
+                        + config["multi_branch_access_cost_um"])
+            path_limit = ((1 + config["multi_branch_max_path_growth_fraction"]) * baseline
+                          + config["multi_branch_max_path_growth_um"])
+            bad_weight = weighted > baseline
+            bad_path = native + upper > path_limit
+            if config["multi_branch_sink_guard"] and (bad_weight or bad_path):
+                local_sinks.append(pin)
+                protected_by["weighted_cost" if bad_weight else "path_detour"] += 1
+                # A retained sink is driven locally; it contributes no claimed
+                # borrowed-wire saving to the whole-net selection score.
+                rows.append((baseline, baseline, 0.0, baseline))
+            else:
+                remote.append(pin)
+                rows.append((baseline, native, upper, weighted))
+                remote_max_path_growth_um = max(remote_max_path_growth_um,
+                                                native + upper - baseline)
+        if remote:
+            remote_groups.append(remote)
+            remote_positions.append(leaf)
+    if not remote_groups:
+        return None
+    groups, positions = remote_groups, remote_positions
+    local_sinks.sort(key=lambda p: (p["x"], p["y"], p["inst"], p["pin"]))
+    average = lambda index: sum(row[index] for row in rows) / len(rows)
+    direct, native, borrowed, weighted = [average(i) for i in range(4)]
+    gain = 1 - weighted / max(direct, 1e-9)
+    if gain < config["multi_branch_min_proxy_gain"]:
+        return None
+    # Sum of per-sink savings per HBT is a stable budget priority, not tree WL.
+    score = (direct - weighted) * len(sinks) / len(positions)
+    return {"driver": driver, "local_sinks": local_sinks, "groups": groups, "positions": positions,
+            "score": score, "proxy": {
+                "kind": "mean_source_sink_manhattan_weighted_length_not_STA",
+                "sink_count": len(sinks), "groups": len(groups),
+                "remote_sink_count": sum(len(group) for group in groups),
+                "source_local_sink_count": len(local_sinks),
+                "source_local_reasons": dict(sorted(protected_by.items())),
+                "remote_max_path_growth_um": remote_max_path_growth_um,
+                "group_sizes": [len(g) for g in groups],
+                "source_access_um": source_access,
+                "baseline_direct_mean_um": direct,
+                "native_path_mean_um": native,
+                "borrowed_path_mean_um": borrowed,
+                "weighted_path_mean_um": weighted,
+                "weighted_gain_fraction": gain,
+                "geometric_detour_mean_um": native + borrowed - direct,
+                "native_path_max_um": max(row[1] for row in rows),
+                "geometric_path_max_um": max(row[1] + row[2] for row in rows)}}
+
+
+def build_branch_entry(net, choice, hnames, dbu, size):
+    groups, points = choice["groups"], choice["positions"]
+    names = [f"{net['name']}__MLS__S{i}__{'TOP' if i == 1 else 'BOT'}"
+             for i in range(len(groups) + 2)]
+    ref = lambda p: {"inst": p["inst"], "pin": p["pin"]}
+    subnets = [{"name": names[0], "die": "bottom", "pins":
+                [ref(choice["driver"])] + [ref(p) for p in choice["local_sinks"]]
+                + [{"inst": hnames[0], "pin": "BOT"}]},
+               {"name": names[1], "die": "upper", "pins":
+                [{"inst": name, "pin": "TOP"} for name in hnames]}]
+    subnets += [{"name": names[i + 2], "die": "bottom", "pins":
+                 [{"inst": hnames[i + 1], "pin": "BOT"}] + [ref(p) for p in group]}
+                for i, group in enumerate(groups)]
+    hbts = [{"name": name, "master": "HBT_BOTIN" if i == 0 else "HBT_TOPIN",
+             "x": point[0], "y": point[1], "origin_x": point[0] - size[0] // 2,
+             "origin_y": point[1] - size[1] // 2,
+             "from_subnet": names[0] if i == 0 else names[1],
+             "to_subnet": names[1] if i == 0 else names[i + 1]}
+            for i, (name, point) in enumerate(zip(hnames, points))]
+    return {"original": net["name"], "topology": "shared_trunk_sink_groups",
+            "subnets": subnets, "hbts": hbts, "score": choice["score"],
+            "original_hpwl_um": hpwl(net["pins"]) / dbu,
+            "path_proxy": choice["proxy"], "slack_ns": net.get("slack_ns")}
+
+
 def plan_design(manifest, config=None):
     config = config_values(config)
     original_manifest = manifest
@@ -323,6 +518,8 @@ def plan_design(manifest, config=None):
         "search_radius": config["relocation_radius"],
         "max_moves": config["relocation_max_moves"],
         "min_improvement_um": config["relocation_min_improvement_um"],
+        "path_max_growth_fraction": config["relocation_path_max_growth_fraction"],
+        "path_max_growth_um": config["relocation_path_max_growth_um"],
     })
     dbu = int(manifest["dbu_per_micron"])
     grid = int(manifest.get("manufacturing_grid", 1))
@@ -363,9 +560,62 @@ def plan_design(manifest, config=None):
             skipped[reason] += 1
     stats["candidate_nets"] = len(candidates)
     identifier = 0
+    stats["multi_branch_candidates"] = 0
+    stats["multi_branch_selected"] = 0
+    stats["multi_branch_hbts"] = 0
+    stats["multi_branch_source_local_sinks"] = 0
+    stats["multi_branch_remote_sinks"] = 0
+    if config["multi_branch_enabled"]:
+        branches = []
+        for net in manifest["nets"]:
+            choice = branch_candidate(net, config, dbu, sites)
+            if choice:
+                branches.append((choice["score"], net["name"], net))
+        stats["multi_branch_candidates"] = len(branches)
+        for _, _, net in sorted(branches, key=lambda item: (-item[0], item[1])):
+            if len(result["selected"]) >= config["max_shared_nets"]:
+                break
+            choice = branch_candidate(net, config, dbu, sites)
+            if choice is None:
+                skipped["branch_updated_geometry"] += 1
+                continue
+            count = len(choice["positions"])
+            if stats["new_hbts"] + count > budget:
+                skipped["branch_budget"] += 1
+                continue
+            hnames = []
+            while len(hnames) < count:
+                name = f"LS_HBT_{identifier}"
+                identifier += 1
+                if name not in inst_names:
+                    hnames.append(name)
+            entry = build_branch_entry(net, choice, hnames, dbu, size)
+            if any(subnet["name"] in names for subnet in entry["subnets"]):
+                skipped["branch_name_collision"] += 1
+                continue
+            inst_names.update(hnames)
+            names.update(subnet["name"] for subnet in entry["subnets"])
+            result["selected"].append(entry)
+            for point in choice["positions"]:
+                sites.reserve(point)
+            stats["new_hbts"] += count
+            stats["multi_branch_selected"] += 1
+            stats["multi_branch_hbts"] += count
+            stats["multi_branch_source_local_sinks"] += len(choice["local_sinks"])
+            stats["multi_branch_remote_sinks"] += sum(len(group) for group in choice["groups"])
+            if config["dynamic_demand"]:
+                demand.adjust("bottom", net["pins"], -1, dbu)
+                root = {"x": choice["positions"][0][0], "y": choice["positions"][0][1]}
+                demand.adjust("bottom", [choice["driver"], root] + choice["local_sinks"], 1, dbu)
+                for group, point in zip(choice["groups"], choice["positions"][1:]):
+                    demand.adjust("bottom", group + [{"x": point[0], "y": point[1]}], 1, dbu)
+                demand.adjust("upper", [{"x": p[0], "y": p[1]} for p in choice["positions"]], 1, dbu)
+    branch_originals = {entry["original"] for entry in result["selected"]}
     for _, _, net, choice in sorted(candidates, key=lambda entry: (-entry[0], entry[1])):
         if len(result["selected"]) >= config["max_shared_nets"] or stats["new_hbts"] + 2 > budget:
             break
+        if net["name"] in branch_originals:
+            continue
         score, axis, a, b, pa, pb, span, die, source_demand, target_demand = choice
         if config["dynamic_demand"]:
             choice, reason = candidate(net, config, dbu, demand)
@@ -373,8 +623,13 @@ def plan_design(manifest, config=None):
                 skipped["updated_" + reason] += 1
                 continue
             score, axis, a, b, pa, pb, span, die, source_demand, target_demand = choice
+        path_guard = None
+        if config["sharing_path_max_detour_fraction"] is not None:
+            path_guard = (next(p for p in a if p.get("io") == "OUTPUT"),
+                          config["sharing_path_max_detour_fraction"],
+                          config["sharing_path_max_detour_um"] * dbu)
         p0, p1 = place_pair(sites, a, b, pa, pb, config["search_radius"],
-                            config["joint_site_placement"])
+                            config["joint_site_placement"], path_guard)
         if p0 is None or p1 is None:
             skipped["no_legal_site"] += 1
             continue
@@ -476,22 +731,43 @@ def validate_plan(manifest, plan):
         if entry["original"] in selected_names:
             raise ValueError("Original net selected more than once")
         selected_names.add(entry["original"])
+        if entry["original"] not in originals:
+            raise ValueError("Unknown original MLS net")
         original = originals[entry["original"]]
+        if (original.get("protected") or original.get("special") or original.get("bterms")
+                or original.get("signal_type", "SIGNAL") != "SIGNAL"
+                or any(p.get("hbt") or p["inst"] == "PIN"
+                       or p["inst"].startswith(("HBT_", "LS_HBT_")) for p in original["pins"])):
+            raise ValueError("Protected original net selected")
+        drivers = [p for p in original["pins"] if p.get("io") == "OUTPUT"]
+        if len(drivers) != 1 or any(p.get("io") not in ("INPUT", "OUTPUT") for p in original["pins"]):
+            raise ValueError("MLS requires one ordinary output driver")
         expected = Counter((p["inst"], p["pin"]) for p in original["pins"])
         pin_dies = {(p["inst"], p["pin"]): p.get("die") for p in original["pins"]}
         actual = Counter((p["inst"], p["pin"]) for s in entry["subnets"] for p in s["pins"]
                          if not p["inst"].startswith("LS_HBT_"))
         if actual != expected:
             raise ValueError(f"Changed terminal set on {entry['original']}")
-        if len(entry["subnets"]) != 3 or len(entry["hbts"]) != 2:
-            raise ValueError("MLS prototype requires three subnets and two HBTs")
+        if len(entry["subnets"]) < 3 or len(entry["hbts"]) != len(entry["subnets"]) - 1:
+            raise ValueError("MLS must be a tree with one fewer HBT than subnets")
+        declared_hbts = {h["name"] for h in entry["hbts"]}
+        if len(declared_hbts) != len(entry["hbts"]):
+            raise ValueError("Duplicate HBT declaration")
         connected = defaultdict(list)
         subnet_names = {s["name"] for s in entry["subnets"]}
-        if len(subnet_names) != 3:
+        if len(subnet_names) != len(entry["subnets"]):
             raise ValueError("Duplicate MLS subnet name")
+        subnet_ids = set()
+        root = None
         for s in entry["subnets"]:
-            if not s["name"].startswith(entry["original"] + "__MLS__S"):
-                raise ValueError("Invalid MLS subnet name")
+            match = re.fullmatch(re.escape(entry["original"]) + r"__MLS__S(\d+)__(BOT|TOP)", s["name"])
+            if not match or int(match[1]) in subnet_ids:
+                raise ValueError("Invalid or duplicate MLS subnet identifier")
+            subnet_ids.add(int(match[1]))
+            if s["die"] not in ("bottom", "upper") or len(s["pins"]) < 2:
+                raise ValueError("Invalid MLS subnet die or terminal count")
+            if {"inst": drivers[0]["inst"], "pin": drivers[0]["pin"]} in s["pins"]:
+                root = s["name"]
             suffix = "__BOT" if s["die"] == "bottom" else "__TOP"
             if not s["name"].endswith(suffix):
                 raise ValueError("Subnet name/die mismatch")
@@ -502,8 +778,14 @@ def validate_plan(manifest, plan):
                     connected[p["inst"]].append((s["name"], p["pin"]))
                 elif pin_dies[(p["inst"], p["pin"])] != s["die"]:
                     raise ValueError("Original terminal moved to the wrong die")
+        if set(connected) != declared_hbts:
+            raise ValueError("Unknown or unused MLS HBT terminal")
         graph = defaultdict(set)
+        directed = defaultdict(set)
+        indegree = Counter()
         for h in entry["hbts"]:
+            if not re.fullmatch(r"LS_HBT_\d+", h["name"]):
+                raise ValueError("Invalid MLS HBT name")
             if h["name"] in identities:
                 raise ValueError("Duplicate HBT instance name")
             identities.add(h["name"])
@@ -515,6 +797,8 @@ def validate_plan(manifest, plan):
             pin_at_source = next(p for n, p in connected[h["name"]] if n == h["from_subnet"])
             if h["master"] != ("HBT_BOTIN" if pin_at_source == "BOT" else "HBT_TOPIN"):
                 raise ValueError("HBT Liberty direction disagrees with signal direction")
+            directed[h["from_subnet"]].add(h["to_subnet"])
+            indegree[h["to_subnet"]] += 1
             graph[ends[0]].add(ends[1])
             graph[ends[1]].add(ends[0])
             x, y = h["x"], h["y"]
@@ -532,16 +816,66 @@ def validate_plan(manifest, plan):
             if not sites.legal((x, y)):
                 raise ValueError("HBT pitch violation")
             sites.reserve((x, y))
-        visited, pending = set(), [entry["subnets"][0]["name"]]
+        if root is None or indegree[root] != 0 or any(indegree[name] != 1 for name in subnet_names - {root}):
+            raise ValueError("MLS directed tree must have exactly one driver at every subnet")
+        visited, pending = set(), [root]
         while pending:
             node = pending.pop()
             if node not in visited:
                 visited.add(node)
-                pending.extend(graph[node] - visited)
+                pending.extend(directed[node] - visited)
         if visited != {s["name"] for s in entry["subnets"]}:
             raise ValueError("Disconnected MLS family")
+        if (entry.get("topology") == "shared_trunk_sink_groups"
+                and plan["config"]["multi_branch_sink_guard"]):
+            # Independently reconstruct the unique HBT path for every sink;
+            # do not trust aggregate score or the generator's proxy metadata.
+            dbu = manifest["dbu_per_micron"]
+            source = drivers[0]["x"], drivers[0]["y"]
+            source_die = drivers[0]["die"]
+            by_subnet = {s["name"]: s for s in entry["subnets"]}
+            paths = {root: (source, 0.0, 0.0)}
+            pending = [root]
+            outgoing = defaultdict(list)
+            for h in entry["hbts"]:
+                outgoing[h["from_subnet"]].append(h)
+            while pending:
+                node = pending.pop()
+                point, native, borrowed = paths[node]
+                for h in outgoing[node]:
+                    target = h["x"], h["y"]
+                    length = distance(point, target) / dbu
+                    paths[h["to_subnet"]] = (target,
+                        native + (length if by_subnet[node]["die"] == source_die else 0),
+                        borrowed + (length if by_subnet[node]["die"] != source_die else 0))
+                    pending.append(h["to_subnet"])
+            pin_records = {(p["inst"], p["pin"]): p for p in original["pins"]}
+            for subnet in entry["subnets"]:
+                if subnet["name"] == root:
+                    continue
+                point, native, borrowed = paths[subnet["name"]]
+                for pin in subnet["pins"]:
+                    record = pin_records.get((pin["inst"], pin["pin"]))
+                    if record is None:
+                        continue
+                    sink = record["x"], record["y"]
+                    direct = distance(source, sink) / dbu
+                    tail = distance(point, sink) / dbu
+                    local = native + (tail if subnet["die"] == source_die else 0)
+                    remote = borrowed + (tail if subnet["die"] != source_die else 0)
+                    weighted = (local + plan["config"]["multi_branch_borrowed_r_ratio"] * remote
+                                + plan["config"]["multi_branch_access_cost_um"])
+                    limit = ((1 + plan["config"]["multi_branch_max_path_growth_fraction"]) * direct
+                             + plan["config"]["multi_branch_max_path_growth_um"])
+                    if weighted > direct + 1e-9 or local + remote > limit + 1e-9:
+                        raise ValueError("Multi-branch sink violates individual path guard")
     added = sum(len(s["hbts"]) for s in plan["selected"])
-    if added > plan["stats"]["new_hbt_budget"]:
+    capacity = ((sites.area[2] - sites.area[0]) // pitch) * ((sites.area[3] - sites.area[1]) // pitch)
+    physical_budget = max(0, min(plan["config"]["max_new_hbts"],
+                                math.floor(capacity * plan["config"]["capacity_fraction"]) - len(reference)))
+    if added != plan["stats"]["new_hbts"] or len(plan["selected"]) != plan["stats"]["selected_nets"]:
+        raise ValueError("MLS plan statistics disagree with actual entries")
+    if added > min(plan["stats"]["new_hbt_budget"], physical_budget):
         raise ValueError("HBT budget exceeded")
 
 
@@ -596,10 +930,16 @@ def main():
     parser.add_argument("--config", type=Path)
     parser.add_argument("--timing-csv", type=Path,
                         help="Optional CSV with net,slack_ns columns; negative-slack nets are guarded")
+    parser.add_argument("--protected-nets", type=Path)
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--apply-tcl", required=True, type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if args.protected_nets:
+        protected = set(json.loads(args.protected_nets.read_text(encoding="utf-8")))
+        for net in manifest["nets"]:
+            if net["name"] in protected:
+                net["protected"] = True
     overrides = json.loads(args.config.read_text(encoding="utf-8")) if args.config else None
     if args.timing_csv:
         with args.timing_csv.open(encoding="utf-8", newline="") as handle:

@@ -239,8 +239,27 @@ namespace eval mls_prepare {
     set stage_start [clock milliseconds]
     export_manifest $manifest $db $block $bot_master
     puts "MLS_STAGE export_manifest_ms=[expr {[clock milliseconds] - $stage_start}]"
+    # Protect clock/power master terminals even when the input DEF omitted USE.
+    # This list is input data only; it does not mutate the netlist or STA state.
+    set protected_path $::env(RESULTS_DIR)/mls_protected_nets.json
+    set protected_fp [open $protected_path w]
+    set protected_names {}
+    foreach net [$block getNets] {
+      set protected [expr {[$net getSigType] ne "SIGNAL" || [$net isSpecial]}]
+      if {!$protected} {
+        foreach iterm [$net getITerms] {
+          if {[[$iterm getMTerm] getSigType] in {CLOCK POWER GROUND}} {
+            set protected 1
+            break
+          }
+        }
+      }
+      if {$protected} { lappend protected_names [json_string [$net getName]] }
+    }
+    puts $protected_fp "\[[join $protected_names ,]\]"
+    close $protected_fp
     set command [list python3 $script_dir/mls_planner.py --manifest $manifest \
-      --plan $plan --apply-tcl $apply_tcl]
+      --plan $plan --apply-tcl $apply_tcl --protected-nets $protected_path]
     if {[info exists ::env(MLS_CONFIG)] && $::env(MLS_CONFIG) ne ""} {
       lappend command --config [file normalize $::env(MLS_CONFIG)]
     }

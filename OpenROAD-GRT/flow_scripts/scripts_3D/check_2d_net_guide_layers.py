@@ -7,6 +7,7 @@ import re
 import argparse
 import sys
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 from die_net_common import (
@@ -22,6 +23,7 @@ UPPER_MIN = 11
 METAL_RE = re.compile(r"^metal(\d+)$", re.I)
 
 
+@lru_cache(maxsize=128)
 def parse_layer(name: str) -> int | None:
     match = METAL_RE.match(name.strip())
     return int(match.group(1)) if match else None

@@ -17,6 +17,10 @@ DEFAULT_CONFIG = {
     "search_radius": 2,
     "max_moves": 4096,
     "min_improvement_um": 0.1,
+    # Optional geometric guard on complete cross-die driver-to-sink paths.
+    # None preserves the legacy HPWL-only objective exactly.
+    "path_max_growth_fraction": None,
+    "path_max_growth_um": 0.0,
 }
 
 
@@ -36,6 +40,13 @@ def _config(overrides):
     value = values["min_improvement_um"]
     if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise ValueError("min_improvement_um must be finite and nonnegative")
+    for key in ("path_max_growth_fraction", "path_max_growth_um"):
+        value = values[key]
+        if key == "path_max_growth_fraction" and value is None:
+            continue
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or value < 0):
+            raise ValueError(f"{key} must be finite and nonnegative")
     return values
 
 
@@ -56,6 +67,45 @@ def _optimum_interval(bounds, lower_index, upper_index):
                        for value in (box[lower_index], box[upper_index]))
     n = len(bounds)
     return endpoints[n - 1], endpoints[n]
+
+
+def _cross_die_paths(name, net_indices, nets, hbt_names, current):
+    """Describe ordinary-driver -> HBT -> ordinary-sink Manhattan paths.
+
+    Original HBT masters do not consistently agree with the ordinary cells'
+    signal direction, so infer the direction from ordinary OUTPUT terminals.
+    Ambiguous or multi-HBT families return None and are protected when the
+    optional guard is enabled, rather than silently treating them as safe.
+    """
+    if len(net_indices) != 2:
+        return None
+    sides = []
+    for index in sorted(net_indices):
+        pins = nets[index]["pins"]
+        own = [p for p in pins if p["inst"] == name]
+        ordinary = [p for p in pins if p["inst"] not in hbt_names]
+        if (len(own) != 1 or len(ordinary) != len(pins) - 1
+                or any(p.get("io") not in ("INPUT", "OUTPUT") for p in ordinary)):
+            return None
+        sides.append((own[0], ordinary))
+    drivers = [(side, pin) for side, (_own, pins) in enumerate(sides)
+               for pin in pins if pin.get("io") == "OUTPUT"]
+    if len(drivers) != 1:
+        return None
+    source_side, driver = drivers[0]
+    source_hbt = sides[source_side][0]
+    sink_hbt, sinks = sides[1 - source_side]
+    source_offset = (source_hbt["x"] - current[0], source_hbt["y"] - current[1])
+    sink_offset = (sink_hbt["x"] - current[0], sink_hbt["y"] - current[1])
+    return [(driver, sink, source_offset, sink_offset) for sink in sinks]
+
+
+def _path_length(path, point):
+    driver, sink, source_offset, sink_offset = path
+    return (abs(driver["x"] - point[0] - source_offset[0])
+            + abs(driver["y"] - point[1] - source_offset[1])
+            + abs(sink["x"] - point[0] - sink_offset[0])
+            + abs(sink["y"] - point[1] - sink_offset[1]))
 
 
 class _Lattice:
@@ -168,6 +218,23 @@ def optimize_hbts(manifest, config=None):
             protected.add(name)
             skipped["protected_net"] += 1
     eligible = sorted(set(by_name) - protected)
+    guarded_paths = {}
+    if values["path_max_growth_fraction"] is not None:
+        for name in eligible:
+            paths = _cross_die_paths(name, incident[name], nets, hbt_names, before[name])
+            if paths is None:
+                protected.add(name)
+                skipped["ambiguous_cross_die_path"] += 1
+                continue
+            guarded_paths[name] = [
+                (path, _path_length(path, before[name])
+                 * (1 + values["path_max_growth_fraction"])
+                 + values["path_max_growth_um"] * dbu)
+                for path in paths]
+        eligible = sorted(set(eligible) - protected)
+        stats["path_guard"] = {"guarded_hbts": len(guarded_paths),
+                               "guarded_paths": sum(map(len, guarded_paths.values())),
+                               "rejected_candidates": 0}
     stats["eligible_hbts"] = len(eligible)
     stats["skipped"] = dict(sorted(skipped.items()))
     affected = {index for name in eligible for index in incident[name]}
@@ -214,6 +281,10 @@ def optimize_hbts(manifest, config=None):
             best_point, best_cost = current, old_cost
             for point in lattice.candidates(current, (xl, yl, xh, yh), values["search_radius"]):
                 if point in lattice.occupied and lattice.occupied[point] != name:
+                    continue
+                if any(_path_length(path, point) > limit
+                       for path, limit in guarded_paths.get(name, ())):
+                    stats["path_guard"]["rejected_candidates"] += 1
                     continue
                 candidate_cost = objective(point)
                 # Prefer the shortest relocation, then stable x/y ordering.

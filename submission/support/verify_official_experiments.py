@@ -19,6 +19,25 @@ def overlays(directory: Path) -> dict:
     return {str(p.relative_to(directory)): digest(p) for p in sorted((directory / 'openroad_overlay').rglob('*')) if p.is_file()}
 
 
+def selected_evaluation_cases(plan: dict) -> list[str]:
+    # Existing captured plans omitted this field and evaluated only bp_fe.
+    cases = plan.get('evaluate_cases', [] if plan['grt_only'] else ['bp_fe'])
+    if (not isinstance(cases, list) or any(not isinstance(case, str) for case in cases)
+            or len(set(cases)) != len(cases) or set(cases) - set(plan['cases'])
+            or (plan['grt_only'] and cases) or (not plan['grt_only'] and not cases)):
+        raise ValueError('Evaluation cases must be distinct routed cases, or empty only for a GRT-only plan')
+    return cases
+
+
+def candidate_threads(plan: dict) -> int:
+    threads = plan.get('threads', 8)
+    if (not isinstance(threads, int) or not 1 <= threads <= 32
+            or not 1 <= plan['jobs'] <= 4 or threads * plan['jobs'] > 32
+            or not 1 <= plan['build_threads'] <= 32):
+        raise ValueError('Invalid thread budget')
+    return threads
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, required=True)
@@ -32,16 +51,16 @@ def main() -> int:
     record_path = root / 'experiment.json'
     if record_path.exists():
         raise ValueError('Refusing a reused experiment directory')
-    if plan['threads'] != 8 or not 1 <= plan['jobs'] <= 4 or not 1 <= plan['build_threads'] <= 32:
-        raise ValueError('Invalid thread budget')
+    threads = candidate_threads(plan)
+    evaluate_cases = selected_evaluation_cases(plan)
     if any(item.get('reuse_quality') for item in plan['candidates'].values()):
         raise ValueError('Historical quality reuse is disabled: full evaluation-time platform collateral identity was not recorded')
     env = clean_environment()
     result = {'scope': 'official_container_candidate_experiments', 'status': 'preflight',
               'started_utc': datetime.now(timezone.utc).isoformat(), 'plan_sha256': digest(args.plan),
-              'image_id': plan['baseline']['image_id'], 'threads_per_candidate': 8,
-              'jobs': plan['jobs'], 'peak_candidate_threads': 8 * plan['jobs'],
-              'expected_fixed_drt_end_iter': 2, 'candidates': {}}
+              'image_id': plan['baseline']['image_id'], 'threads_per_candidate': threads,
+              'jobs': plan['jobs'], 'peak_candidate_threads': threads * plan['jobs'],
+              'expected_fixed_drt_end_iter': 2, 'evaluate_cases': evaluate_cases, 'candidates': {}}
     def save(): write_manifest(record_path, result)
     save()
     try:
@@ -141,10 +160,10 @@ def main() -> int:
             try:
                 route_env = dict(env, OPENROAD_EXE=parent['public_binary'], MLS_ENABLE='0' if plan['candidates'][label]['baseline_mode'] else '1')
                 record['grt'] = run_stage(['bash', str(source / 'run.sh'), str(inputs / 'cases' / case / 'grt_input'),
-                    str(candidate), str(platform), '8'], route_env, directory / 'grt.log', repository)
+                    str(candidate), str(platform), str(threads)], route_env, directory / 'grt.log', repository)
                 if record['grt']['exit_code']: raise RuntimeError('Public GRT failed')
                 manifest = read_json(candidate / 'run_manifest.json')
-                if manifest['openroad_exe'] != parent['public_binary'] or manifest['threads'] != 8 or manifest['input_sha256'] != result['input_sha256'][case]['4_1_cts.def']:
+                if manifest['openroad_exe'] != parent['public_binary'] or manifest['threads'] != threads or manifest['input_sha256'] != result['input_sha256'][case]['4_1_cts.def']:
                     raise ValueError('Unexpected public GRT engine/thread/input')
                 if manifest['mls_enabled'] != (not plan['candidates'][label]['baseline_mode']):
                     raise ValueError('Unexpected MLS mode')
@@ -188,15 +207,15 @@ def main() -> int:
                 result['candidates'][label]['cases'][case] = record
                 print(f'{label}/{case}: {record["status"]}', flush=True); save()
 
-        def evaluate(label: str) -> tuple:
-            record = result['candidates'][label]['cases']['bp_fe']
+        def evaluate(label: str, case: str) -> tuple:
+            record = result['candidates'][label]['cases'][case]
             directory = Path(record['candidate_dir']).parent
             reports = directory / 'evaluation'; reports.mkdir()
             work = directory / 'official_evaluator_work'
             if work.exists(): raise ValueError('Evaluator work directory was not fresh')
             eval_env = dict(env, CONTEST_ROOT=str(repository), WORK_ROOT=str(work),
-                MATERIALIZED_OPEN3D=str(work / 'OpenROAD-3D'), CONTEST_EVAL_THREADS='8')
-            stage = run_stage([str(CONTEST), 'evaluate', 'bp_fe', str(inputs), record['candidate_dir'], str(reports)],
+                MATERIALIZED_OPEN3D=str(work / 'OpenROAD-3D'), CONTEST_EVAL_THREADS=str(threads))
+            stage = run_stage([str(CONTEST), 'evaluate', case, str(inputs), record['candidate_dir'], str(reports)],
                 eval_env, directory / 'evaluate.log', repository)
             stage.update(evaluator_invoked=True, full_evaluation_completed=False, work_root=str(work), report_dir=str(reports))
             try:
@@ -211,26 +230,32 @@ def main() -> int:
                 for name in ('drt_pass_bottom.log', 'drt_pass_upper.log'):
                     paths = list(work.rglob(name))
                     if len(paths) != 1: raise ValueError('Expected one fixed DRT pass log: ' + name)
-                    match = re.search(r'detailed_route arguments:[^\n]*-droute_end_iter\s+(\d+)\b', paths[0].read_text(errors='replace'))
+                    log_text = paths[0].read_text(errors='replace')
+                    match = re.search(r'detailed_route arguments:[^\n]*-droute_end_iter\s+(\d+)\b', log_text)
                     if match is None or int(match.group(1)) != 2: raise ValueError('Actual DRT end_iter is not 2')
-                    proof[name] = {'path': str(paths[0]), 'sha256': digest(paths[0]), 'actual_drt_end_iter': 2}
+                    thread_match = re.search(r'^DRT pass threads:\s+(\d+)\s*$', log_text, re.M)
+                    if thread_match is None or int(thread_match.group(1)) != threads:
+                        raise ValueError('Actual DRT thread count differs from the captured plan')
+                    proof[name] = {'path': str(paths[0]), 'sha256': digest(paths[0]), 'actual_drt_end_iter': 2,
+                                   'actual_threads': int(thread_match.group(1))}
                 if digest(Path(record['candidate_dir']) / '5_1_grt.odb') != record['source_odb_sha256']:
                     raise ValueError('Submitted ODB changed during evaluation')
                 stage.update(full_evaluation_completed=True, metrics=metrics, metrics_sha256=digest(reports / 'metrics.json'),
-                    final_sta_sha256=digest(reports / '6_report.json'), actual_drt_end_iter=2, fixed_iteration_log_proof=proof)
+                    final_sta_sha256=digest(reports / '6_report.json'), actual_drt_end_iter=2, actual_threads=threads,
+                    fixed_iteration_log_proof=proof)
             except Exception as error: stage.update(status='failed', error=str(error))
-            return label, stage
+            return label, case, stage
 
         if not plan['grt_only']:
             result['status'] = 'evaluating'; save()
             with ThreadPoolExecutor(max_workers=plan['jobs']) as pool:
-                futures = [pool.submit(evaluate, label) for label, candidate in result['candidates'].items()
-                           if candidate['cases']['bp_fe']['status'] == 'legal']
+                futures = [pool.submit(evaluate, label, case) for label, candidate in result['candidates'].items()
+                           for case in evaluate_cases if candidate['cases'][case]['status'] == 'legal']
                 for future in as_completed(futures):
-                    label, stage = future.result()
-                    record = result['candidates'][label]['cases']['bp_fe']; record['evaluation'] = stage
+                    label, case, stage = future.result()
+                    record = result['candidates'][label]['cases'][case]; record['evaluation'] = stage
                     record['status'] = stage['status'] if stage['status'] in ('complete', 'complete_reused') else 'evaluation_failed'
-                    print(f'{label}/bp_fe evaluation: {record["status"]}', flush=True); save()
+                    print(f'{label}/{case} evaluation: {record["status"]}', flush=True); save()
         for candidate in result['candidates'].values():
             candidate['status'] = 'complete' if all(record['status'] in ('legal', 'complete', 'complete_reused') for record in candidate['cases'].values()) else 'failed'
         result.update(status='complete' if all(candidate['status'] == 'complete' for candidate in result['candidates'].values()) else 'failed',
