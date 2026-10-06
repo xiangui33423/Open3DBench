@@ -9,11 +9,43 @@ proc fused_stage {name script} {
   puts "GRT_STAGE ${name}_ms=[expr {[clock milliseconds] - $started}]"
   return $result
 }
+proc fused_snapshot_sigtypes {block} {
+  # In the supplied GRT, initClockNets is the only routing operation that
+  # changes a net's SigType. It uses the same native findClkNets query.
+  # The supplied FASTROUTE_TCL changes tracks/layer settings only, and both
+  # routing passes preserve the netlist and SDC after this snapshot.
+  set mode [expr {[info exists ::env(GRT_METADATA_SNAPSHOT)] ? $::env(GRT_METADATA_SNAPSHOT) : "auto"}]
+  if {$mode ni {auto all}} { error "Invalid GRT_METADATA_SNAPSHOT '$mode'" }
+  if {$mode eq "all"} {
+    puts "GRT_METADATA_SNAPSHOT fallback=forced_all"
+  } elseif {[info commands ::sta::find_all_clk_nets] ne ""} {
+    set saved {}
+    if {![catch {
+      foreach net [::sta::find_all_clk_nets] {
+        lappend saved [list $net [$net getSigType]]
+      }
+    }]} {
+      puts "GRT_METADATA_SNAPSHOT mode=clock_nets count=[llength $saved]"
+      return $saved
+    }
+    puts "GRT_METADATA_SNAPSHOT fallback=query_error"
+  } else {
+    puts "GRT_METADATA_SNAPSHOT fallback=missing_query"
+  }
+  # Discard any partial snapshot if querying or reading a returned net failed.
+  set saved {}
+  foreach net [$block getNets] {
+    lappend saved [list $net [$net getSigType]]
+  }
+  puts "GRT_METADATA_SNAPSHOT mode=all_nets count=[llength $saved]"
+  return $saved
+}
 set fused_started [clock milliseconds]
 set fused_initial_design [expr {[info exists ::env(GRT_INITIAL_DESIGN)] ? $::env(GRT_INITIAL_DESIGN) : "4_cts.odb"}]
 load_design $fused_initial_design 4_cts.sdc "Starting fused die-by-die global routing"
 puts "GRT_STAGE load_design_ms=[expr {[clock milliseconds] - $fused_started}]"
 set fused_script_dir [file dirname [file normalize [info script]]]
+source $fused_script_dir/routing_capacity.tcl
 set fused_input_def $::env(RESULTS_DIR)/4_1_cts.def
 if {[info exists ::env(GRT_PREPARE_TCL)] && $::env(GRT_PREPARE_TCL) ne ""} {
   fused_stage prepare {source [file normalize $::env(GRT_PREPARE_TCL)]}
@@ -45,27 +77,28 @@ if {$fused_hints_mode eq "1" && [file exists $::env(RESULTS_DIR)/mls_manifest.js
 }
 # Keep the pre-GRT metadata used by an isolated finalizer. make_tracks appends
 # patterns to a populated grid, and GRT marks clock leaf nets as CLOCK.
-set fused_block [ord::get_db_block]
-set fused_net_sigtypes {}
-foreach net [$fused_block getNets] { lappend fused_net_sigtypes [list $net [$net getSigType]] }
-set fused_track_patterns {}
-set fused_layer_adjustments {}
-foreach layer [[ord::get_db_tech] getLayers] {
-  if {[$layer getType] ne "ROUTING"} { continue }
-  lappend fused_layer_adjustments [list $layer [$layer getLayerAdjustment]]
-  set track [$fused_block findTrackGrid $layer]
-  set x_patterns {}
-  set y_patterns {}
-  set existed [expr {$track ne "NULL"}]
-  if {$existed} {
-    for {set i 0} {$i < [$track getNumGridPatternsX]} {incr i} {
-      lappend x_patterns [$track getGridPatternX $i]
+fused_stage metadata_snapshot {
+  set fused_block [ord::get_db_block]
+  set fused_net_sigtypes [fused_snapshot_sigtypes $fused_block]
+  set fused_track_patterns {}
+  set fused_layer_adjustments {}
+  foreach layer [[ord::get_db_tech] getLayers] {
+    if {[$layer getType] ne "ROUTING"} { continue }
+    lappend fused_layer_adjustments [list $layer [$layer getLayerAdjustment]]
+    set track [$fused_block findTrackGrid $layer]
+    set x_patterns {}
+    set y_patterns {}
+    set existed [expr {$track ne "NULL"}]
+    if {$existed} {
+      for {set i 0} {$i < [$track getNumGridPatternsX]} {incr i} {
+        lappend x_patterns [$track getGridPatternX $i]
+      }
+      for {set i 0} {$i < [$track getNumGridPatternsY]} {incr i} {
+        lappend y_patterns [$track getGridPatternY $i]
+      }
     }
-    for {set i 0} {$i < [$track getNumGridPatternsY]} {incr i} {
-      lappend y_patterns [$track getGridPatternY $i]
-    }
+    lappend fused_track_patterns [list $layer $existed $x_patterns $y_patterns]
   }
-  lappend fused_track_patterns [list $layer $existed $x_patterns $y_patterns]
 }
 if {[info exists ::env(FASTROUTE_TCL)]} { source $::env(FASTROUTE_TCL) }
 if {[info commands set_net_routing_layers] eq ""} {
@@ -107,6 +140,7 @@ proc fused_route_pass {names min_layer max_layer guide report} {
   }
   set_routing_layers -signal ${min_layer}-${max_layer}
   set_global_routing_layer_adjustment ${min_layer}-${max_layer} $::fused_adjustment
+  grt_capacity::apply $min_layer $max_layer
   if {[info exists ::env(MACRO_EXTENSION)]} { set_macro_extension $::env(MACRO_EXTENSION) }
   set has_hints [expr {[dict size $::grt_layer_hints] > 0}]
   set hints_policy [expr {[info exists ::fused_hints_policy] ? $::fused_hints_policy : "layers"}]
@@ -120,14 +154,32 @@ proc fused_route_pass {names min_layer max_layer guide report} {
     # The next pass must not inherit the first die's selected network set.
     ::grt::clear_net_resistance_aware
   }
+  set enqueue_started [clock milliseconds]
+  set dispatch [expr {[info exists ::env(GRT_LAYER_DISPATCH)] ? $::env(GRT_LAYER_DISPATCH) : "auto"}]
+  if {$dispatch ni {auto legacy}} { error "Invalid GRT_LAYER_DISPATCH '$dispatch'" }
+  set native_layers [expr {$dispatch ne "legacy" &&
+    [info commands ::grt::set_net_routing_layers] ne "" &&
+    [info commands ::grt::parse_layer_name] ne ""}]
   set tech [ord::get_db_tech]
-  set pass_min [[$tech findLayer $min_layer] getRoutingLevel]
-  set pass_max [[$tech findLayer $max_layer] getRoutingLevel]
+  if {$native_layers} {
+    # The public wrapper performs these same parses before forwarding a dbNet
+    # and two layer integers to this existing native setter. Net existence,
+    # hint clamps and native range validation still apply to every net.
+    if {$::fused_block eq "NULL"} { error "Missing dbBlock" }
+    set pass_min [::grt::parse_layer_name $min_layer]
+    set pass_max [::grt::parse_layer_name $max_layer]
+    if {$pass_min > $pass_max} { error "Net routing layer range must be min-max" }
+  } else {
+    set pass_min [[$tech findLayer $min_layer] getRoutingLevel]
+    set pass_max [[$tech findLayer $max_layer] getRoutingLevel]
+  }
   foreach name $names {
     set net [$::fused_block findNet $name]
     if {$net eq "NULL"} { error "Missing classified net '$name'" }
     set net_min $min_layer
     set net_max $max_layer
+    set net_min_level $pass_min
+    set net_max_level $pass_max
     if {$has_hints && [dict exists $::grt_layer_hints $name] && [$net getSigType] eq "SIGNAL"} {
       # Clock/power master pins can identify protected nets even if their
       # DEF USE was omitted. Never promote their routing floor/ceiling.
@@ -150,15 +202,25 @@ proc fused_route_pass {names min_layer max_layer guide report} {
           set lo [expr {max($pass_min, [$hint_lo getRoutingLevel])}]
           set hi [expr {min($pass_max, [$hint_hi getRoutingLevel])}]
           if {$lo > $hi} { error "Layer hint leaves no legal die layer for '$name'" }
-          set net_min [[$tech findRoutingLayer $lo] getName]
-          set net_max [[$tech findRoutingLayer $hi] getName]
+          set net_min_level $lo
+          set net_max_level $hi
+          if {!$native_layers} {
+            set net_min [[$tech findRoutingLayer $lo] getName]
+            set net_max [[$tech findRoutingLayer $hi] getName]
+          }
           incr hint_count
         }
       }
     }
-    set_net_routing_layers $name $net_min $net_max
+    if {$native_layers} {
+      ::grt::set_net_routing_layers $net $net_min_level $net_max_level
+    } else {
+      set_net_routing_layers $name $net_min $net_max
+    }
     grt::add_net_to_route $net
   }
+  puts "GRT_LAYER_DISPATCH native=$native_layers die=$min_layer-$max_layer"
+  puts "GRT_STAGE enqueue_${min_layer}_${max_layer}_ms=[expr {[clock milliseconds] - $enqueue_started}]"
   puts "GRT_LAYER_HINTS applied=$hint_count die=$min_layer-$max_layer"
   puts "GRT_RESISTANCE_HINTS applied=$resistance_hint_count die=$min_layer-$max_layer"
   puts "Fused process pass: [llength $names] nets on $min_layer-$max_layer"
@@ -235,23 +297,27 @@ set fused_started [clock milliseconds]
 # Restore exactly the track patterns and net uses saved before routing. Native
 # OpenROAD cannot read_db over a populated design, so restoration uses OpenDB
 # setters and recreates each grid immediately to retain its original table id.
-foreach entry $fused_track_patterns {
-  lassign $entry layer existed x_patterns y_patterns
-  set track [$fused_block findTrackGrid $layer]
-  if {$track ne "NULL"} { odb::dbTrackGrid_destroy $track }
-  if {$existed} {
-    set track [odb::dbTrackGrid_create $fused_block $layer]
-    foreach pattern $x_patterns { $track addGridPatternX {*}$pattern }
-    foreach pattern $y_patterns { $track addGridPatternY {*}$pattern }
+fused_stage restore_tracks {
+  foreach entry $fused_track_patterns {
+    lassign $entry layer existed x_patterns y_patterns
+    set track [$fused_block findTrackGrid $layer]
+    if {$track ne "NULL"} { odb::dbTrackGrid_destroy $track }
+    if {$existed} {
+      set track [odb::dbTrackGrid_create $fused_block $layer]
+      foreach pattern $x_patterns { $track addGridPatternX {*}$pattern }
+      foreach pattern $y_patterns { $track addGridPatternY {*}$pattern }
+    }
   }
 }
-foreach entry $fused_net_sigtypes {
-  lassign $entry net sigtype
-  if {[$net getSigType] ne $sigtype} { $net setSigType $sigtype }
+fused_stage restore_sigtypes {
+  foreach entry $fused_net_sigtypes {
+    lassign $entry net sigtype
+    if {[$net getSigType] ne $sigtype} { $net setSigType $sigtype }
+  }
 }
 grt::clear_net_routing_layers
 set_routing_layers -signal ${fused_bot_min}-${fused_top_max}
-read_guides $fused_guide
+fused_stage read_guides {read_guides $fused_guide}
 # Capacity adjustments are router settings. Keep the prepared database values
 # in the published ODB, as a fresh isolated finalizer does.
 foreach entry $fused_layer_adjustments {
@@ -261,7 +327,7 @@ foreach entry $fused_layer_adjustments {
 # The fixed evaluator reads the original SDC and extracts its own parasitics.
 # Publishing the routed ODB does not require a separate STA/ref-clock pass.
 set fused_output $::env(RESULTS_DIR)/5_1_grt.odb
-write_db $fused_output
+fused_stage write_db {write_db $fused_output}
 set fused_marker $::env(RESULTS_DIR)/.grt_finalize_complete
 set fp [open ${fused_marker}.[pid].tmp w]
 puts $fp "odb_size=[file size $fused_output]"

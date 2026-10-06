@@ -167,6 +167,9 @@ class GlobalRouter
   // flow functions
   // Export planner geometry directly from OpenDB without per-pin Tcl wrappers.
   void exportMlsManifest(const char* file_name);
+  // Read-only batched data for the existing Tcl preservation/protection guards.
+  std::vector<std::string> getMlsProtectedNetNames();
+  std::vector<std::string> getMlsInstanceSnapshot();
   // Between two nonempty die-local globalRoute calls; keep hard layer ranges.
   void resetDieRoutingPass();
   void readGuides(const char* file_name);

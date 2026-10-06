@@ -73,8 +73,8 @@ def distance(a, b):
 
 
 def center(pins):
-    return (median_low(sorted(p["x"] for p in pins)),
-            median_low(sorted(p["y"] for p in pins)))
+    return (median_low(p["x"] for p in pins),
+            median_low(p["y"] for p in pins))
 
 
 def config_values(overrides=None):
@@ -156,9 +156,11 @@ class DemandGrid:
             if net.get("special") or net.get("signal_type", "SIGNAL") not in ("SIGNAL", "CLOCK"):
                 continue
             die = next(iter(dies))
-            ix0, iy0, ix1, iy1 = self.indices(bbox(pins))
+            bounds = bbox(pins)
+            ix0, iy0, ix1, iy1 = self.indices(bounds)
             count = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
-            weight = hpwl(pins) / dbu / count
+            xl, yl, xh, yh = bounds
+            weight = (xh - xl + yh - yl) / dbu / count
             grid = diff[die]
             grid[iy0][ix0] += weight
             grid[iy0][ix1 + 1] -= weight
@@ -388,6 +390,9 @@ def geometric_sink_groups(sinks, count):
 def branch_candidate(net, config, dbu, sites):
     """Geometry/resistance proxy only: no claimed STA or routed-tree estimate."""
     pins = net["pins"]
+    # A legal branch needs one driver in addition to the minimum sink count.
+    if len(pins) < config["multi_branch_min_fanout"] + 1:
+        return None
     if (net.get("protected") or net.get("special") or net.get("bterms")
             or net.get("signal_type", "SIGNAL") != "SIGNAL"
             or "__MLS__" in net["name"] or net["name"].endswith(("_BOT", "_TOP"))

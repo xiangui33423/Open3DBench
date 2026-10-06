@@ -62,34 +62,33 @@ Replace `bp_fe` and `baseline` to run another case or keep multiple experiment
 outputs. GRT results are stored under `output/`, and evaluation reports are
 stored under `reports/`.
 
-### MLS submission, version 4
+### MLS submission, version 7
 
-A metal layer sharing implementation is available in `submission/`.
-Version 4 relocates existing HBTs while preserving non-HBT placement, then
-partitions eligible high-fanout nets into a shared trunk and local sink groups.
-Sinks with excessive geometric detours remain directly connected to the source.
-The existing two-HBT sharing algorithm uses the remaining budget: at most 192
-shared nets and 384 new HBTs in total, all on the legal input pitch lattice.
-Every accepted split updates congestion demand. The same rules apply to all cases.
-See [the algorithm description](OpenROAD-GRT/ALGORITHM.md) and
-[the submission instructions](submission/README.md); measured quality and
-verification scope are recorded in [the validation report](submission/VALIDATION.md).
+Version 7 batches read-only protection and instance queries in native code,
+accelerates ordered pin deduplication, and avoids temporary strings in net sorting.
+With the same official image, inputs, 32 threads and one job, total entry runtime
+fell from 1087.582 to 1012.285 seconds (6.92%); all eight cases were faster.
+Submitted ODBs, canonical ODB/DEF/guides, plans and HBT records match version 6
+exactly. This is evaluator-input parity, not a new detailed-routing or WNS result.
+The fresh native build, real-database comparisons and 165 production tests passed.
 
-Inside the supplied contest image, build and invoke the four-argument interface:
+The routing policy remains unchanged. The official score of 30 is still unverified;
+see [submission instructions](submission/README.md),
+[validation scope](submission/VALIDATION.md), and
+[algorithm details](OpenROAD-GRT/ALGORITHM.md).
 
 ```bash
 python3 submission/package.py
 bash submission/build.sh 32
 bash submission/run.sh \
   "$INPUT/cases/bp_fe/grt_input" \
-  output/bp_fe/mls_v4 \
+  output/bp_fe/mls_v7 \
   "$INPUT/platforms/nangate45_3D" 32
 ```
 
-`python3 submission/package.py` also creates `submission.zip` with `run.sh` at
-its root. Set `MLS_ENABLE=0` to run a comparison baseline using the same entry
-point. Formal scores require the fixed evaluator; producing an ODB alone does
-not establish timing, DRC, or score improvement.
+The source-only `submission.zip` has `run.sh` at its root. Rebuild the native
+binary for this release. Local runtime observations exclude the preliminary build
+and do not predict the official normalized score.
 
 ## 3. Repository and Baseline
 

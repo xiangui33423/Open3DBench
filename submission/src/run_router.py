@@ -145,6 +145,7 @@ def main() -> None:
         'set submission_lefs [list ' + ' '.join(tcl_quote(str(p)) for p in lefs) + ']\n' +
         'set submission_libs [list ' + ' '.join(tcl_quote(str(p)) for p in libs) + ']\n')
     env.setdefault('VALIDATE_DIE_GUIDES', '1')
+    env.setdefault('GRT_LAYER_ADJUSTMENTS', 'metal2=0.7,metal3=0.6')
     # Public case configs allow overflow for the fixed detailed-route evaluator.
     env.setdefault('GLOBAL_ROUTE_ARGS', '-allow_congestion -congestion_iterations 1 -congestion_report_iter_step 5 -verbose')
     if env.get('MLS_ENABLE', '1') != '0':
@@ -184,6 +185,13 @@ def main() -> None:
         interval: int(count) for count, interval in re.findall(
             r'^GRT_RESISTANCE_HINTS applied=(\d+) die=(\S+)$', global_route_log, re.M)
     }
+    capacity_log = global_route_log + ''.join(
+        '\n' + path.read_text() for path in sorted(logs.glob('grt_pass_*.log')))
+    capacity_adjustments = {}
+    for layer, adjustment, interval in re.findall(
+            r'^GRT_CAPACITY layer=(\S+) adjustment=(\S+) die=(\S+)$',
+            capacity_log, re.M):
+        capacity_adjustments.setdefault(interval, {})[layer] = float(adjustment)
     odb, guide, marker = results / '5_1_grt.odb', results / 'route.guide', results / '.grt_finalize_complete'
     if not marker.is_file() or not odb.is_file() or not odb.stat().st_size or not guide.is_file() or not guide.stat().st_size:
         raise RuntimeError(f'Routing did not publish complete output; inspect {logs}')
@@ -210,6 +218,9 @@ def main() -> None:
         'grt_check_mode': check_mode.group(1) if check_mode else 'unreported',
         'grt_layer_hint_counts': layer_hint_counts,
         'grt_resistance_hint_counts': resistance_hint_counts,
+        'grt_capacity_adjustments': capacity_adjustments,
+        'grt_capacity_adjustment_default': float(env.get('GLOBAL_ROUTING_LAYER_ADJUSTMENT', '0.5')),
+        'grt_layer_adjustments_requested': env.get('GRT_LAYER_ADJUSTMENTS', ''),
         'global_route_args': env['GLOBAL_ROUTE_ARGS'],
         'grt_process_mode': process_mode, 'grt_input_mode': input_mode,
         'odb_bytes': odb.stat().st_size, 'work_dir': str(work),

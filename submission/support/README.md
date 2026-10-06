@@ -20,7 +20,7 @@ python3 submission/support/verify_manifest_export.py \
 
 该测试首先验证完整真实网表，再加入缺失 pin 几何、负数中心坐标、控制字符、中文名称、不同 die 和多层封装 pin 的实际 OpenDB 边界数据。比较保留每个网及其全部 pin 的顺序。大用例可用 `--skip-fixtures --reference-json` 与同一输入 ODB 先前捕获的 Tcl 清单作流式对照。
 
-`MLS_MANIFEST_EXPORTER=auto` 默认在公开 GRT 含有原生导出命令时使用它；`tcl` 保留旧实现供消融，`native` 强制要求新命令。运行记录新增 `detail_seconds`，分别记录导出、规划、两次路由和校验耗时。其中 `grt.prepare` 包含 `mls.*` 子阶段，这些细分值不应直接全部相加；入口总耗时仍以 `runtime_seconds` 为准。
+`MLS_MANIFEST_EXPORTER=auto` 默认在公开 GRT 含有原生导出命令时使用它；`tcl` 保留旧实现供消融，`native` 强制要求新命令。运行记录新增 `detail_seconds`，分别记录导出、规划、两次路由和校验耗时。其中 `grt.prepare` 包含 `mls.*` 子阶段，这些细分值不应直接全部相加。完整入口耗时以实验工具外部记录的 `grt.wall_seconds` 为准，它覆盖整个 `run.sh` 命令；manifest 的 `runtime_seconds` 是内部计时，范围较窄。两者均不包含后续官方 DRT/RCX/STA 评测时间。
 
 如需验证用户自带的官方离线版本，可先执行 `docker load -i Open3DBench-offline-20260904/docker/3dbench-contest_20260724.tar.gz`，再添加 `--image gaocr/3dbench-contest:20260724`。工具核对该版本的固定 image ID；两个镜像版本的结果需分别报告。
 
@@ -78,3 +78,20 @@ python3 submission/support/compare_metrics.py \
 `--cases` 指定本轮 GRT 与官方合法性检查的 case；`--evaluate-cases` 指定其中进一步运行完整官方 DRT 两轮和最终 STA 的 case，默认仅 `bp_fe`。例如 `--cases bp_fe bp_multi --evaluate-cases bp_fe bp_multi` 会对两例都做完整评测；`--grt-only` 跳过全部 DRT/STA，不能同时指定 `--evaluate-cases`。旧 plan 未包含此字段时仍保留原来的 bp_fe 评测行为。每个任务的 GRT 和 DRT/STA 使用相同 `--threads`，默认 8，范围 1–32；例如 `--jobs 1 --threads 32` 可做单任务 32 线程评测。`--jobs` 上限为 4，且 `jobs × threads` 不得超过 32；启动时统一计入 `reports/optimization_v*` 下仍活跃的实验线程预算。结果会核对 GRT manifest 与底层、上层 DRT 日志中的实际线程数。
 
 官方质量指标复用代码已移除：历史报告缺少评测当时完整平台文件摘要。`--reuse-quality` 和旧复用 plan 都拒绝。最终质量必须来自实际官方 DRT2/STA；本页前面的 `--reuse-report` 仅属于旧版本地原生实验工具，不能作为官方容器验证证据。
+
+新实验在官方日志报告实际平台目录后，旁路保存该目录全部文件的 SHA256，并与输入平台逐文件比对。每个 case 的 `evaluation_platform.json` 在评估器清理临时平台后仍保留；缺失、增添或改变文件均使实验审计失败。该证据是运行期间单次快照，不是持续监测，且不修改固定评估器的命令、环境或行为。
+
+## 第七版批量读取验证
+
+`verify_native_prepare.py` 在实际 ODB 上比较本版原生查询与 v6 Tcl，覆盖九个状态以及原有实例修改保护。需要提供上一版 Tcl：
+
+```bash
+python3 submission/support/verify_native_prepare.py \
+  --openroad /absolute/path/to/v7/openroad \
+  --odb /absolute/path/to/5_1_grt.odb \
+  --hook submission/flow_scripts/scripts_3D/prepare_mls.tcl \
+  --baseline-hook /absolute/path/to/v6/prepare_mls.tcl \
+  --output /absolute/path/to/new-comparison-directory
+```
+
+测试临时单元通过标准 LEF 载入，并记录验证器、二进制、输入和实际产物摘要。它不更改原始 ODB 文件，也不运行布线。第七版实际全八例和最终包证据保存在包外 `reports/optimization_v7`，范围见 `VALIDATION.md`。

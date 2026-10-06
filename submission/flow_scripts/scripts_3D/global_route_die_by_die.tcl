@@ -2,6 +2,7 @@
 utl::set_metrics_stage "globalroute__{}"
 source $::env(SCRIPTS_DIR)/load.tcl
 load_design 4_cts.odb 4_cts.sdc "Starting die-by-die global routing"
+source [file join [file dirname [file normalize [info script]]] routing_capacity.tcl]
 
 set grt_input_odb "4_cts.odb"
 set grt_input_def $::env(RESULTS_DIR)/4_1_cts.def
@@ -48,6 +49,7 @@ proc configure_die_routing_layers {min_layer max_layer} {
   }
   set_global_routing_layer_adjustment ${min_layer}-${max_layer} $adj
   set_routing_layers -signal ${min_layer}-${max_layer}
+  grt_capacity::apply $min_layer $max_layer
   if {[info exist env(MACRO_EXTENSION)]} {
     set_macro_extension $env(MACRO_EXTENSION)
   }
@@ -106,6 +108,14 @@ proc openroad_exe {} {
 }
 
 proc route_pass_subprocess {net_list_path guide_out min_layer max_layer pass_label} {
+  if {[llength [read_net_list $net_list_path]] == 0} {
+    foreach path [list $guide_out $::env(REPORTS_DIR)/congestion_${pass_label}.rpt] {
+      set fp [open $path w]
+      close $fp
+    }
+    puts "Die-isolated pass $pass_label is empty; routing skipped"
+    return
+  }
   set ::env(GRT_PASS_NET_LIST) $net_list_path
   set ::env(GRT_PASS_GUIDE_OUT) $guide_out
   set ::env(GRT_PASS_MIN_LAYER) $min_layer
@@ -183,13 +193,22 @@ puts "  bottom layers: $bot_min-$bot_max"
 puts "  upper layers:  $top_min-$top_max"
 
 # --- Pass 1: bottom die (only bottom metal visible) ---
+if {[llength $bottom_nets] == 0} {
+  foreach path [list $::env(RESULTS_DIR)/route_bottom.guide $::env(REPORTS_DIR)/congestion_bottom.rpt] {
+    set fp [open $path w]
+    close $fp
+  }
+  puts "Pass1: bottom die is empty; routing skipped"
+} else {
 configure_die_routing_layers $bot_min $bot_max
 apply_layer_ranges $bottom_nets $bot_min $bot_max
 set bottom_added [add_nets_to_route_from_file $list_dir/bottom_2d.txt]
+if {$bottom_added == 0} { error "No classified nets found for nonempty bottom die" }
 puts "Pass1: queued $bottom_added bottom nets for GRT"
 global_route -guide_file $::env(RESULTS_DIR)/route_bottom.guide \
   -congestion_report_file $::env(REPORTS_DIR)/congestion_bottom.rpt \
   {*}$grt_args
+}
 
 # --- Pass 2: upper die (isolated subprocess, only upper metal visible) ---
 route_pass_subprocess $list_dir/upper_2d.txt \

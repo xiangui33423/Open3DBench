@@ -63,7 +63,24 @@ namespace eval mls_prepare {
     return [list [$rect xMin] [$rect yMin] [$rect xMax] [$rect yMax]]
   }
 
+  proc use_native_scan {command} {
+    set mode [expr {[info exists ::env(MLS_PREPARE_SCAN)] ? $::env(MLS_PREPARE_SCAN) : "auto"}]
+    if {$mode ni {auto native tcl}} { error "Invalid MLS_PREPARE_SCAN '$mode'" }
+    set available [expr {[info commands $command] ne ""}]
+    if {$mode eq "native" && !$available} { error "Native MLS scan unavailable: $command" }
+    return [expr {$mode ne "tcl" && $available}]
+  }
+
   proc inst_snapshot {block} {
+    if {[use_native_scan ::grt::mls_instance_snapshot]} {
+      set records [::grt::mls_instance_snapshot]
+      if {[llength $records] % 6 != 0} { error "Malformed native MLS component snapshot" }
+      set snapshot [dict create]
+      foreach {name master x y orient status} $records {
+        dict set snapshot $name [list $master [list $x $y] $orient $status]
+      }
+      return $snapshot
+    }
     set snapshot [dict create]
     foreach inst [$block getInsts] {
       set name [$inst getName]
@@ -239,25 +256,42 @@ namespace eval mls_prepare {
     set stage_start [clock milliseconds]
     export_manifest $manifest $db $block $bot_master
     puts "MLS_STAGE export_manifest_ms=[expr {[clock milliseconds] - $stage_start}]"
+    set stage_start [clock milliseconds]
     # Protect clock/power master terminals even when the input DEF omitted USE.
     # This list is input data only; it does not mutate the netlist or STA state.
     set protected_path $::env(RESULTS_DIR)/mls_protected_nets.json
     set protected_fp [open $protected_path w]
     set protected_names {}
-    foreach net [$block getNets] {
-      set protected [expr {[$net getSigType] ne "SIGNAL" || [$net isSpecial]}]
-      if {!$protected} {
-        foreach iterm [$net getITerms] {
-          if {[[$iterm getMTerm] getSigType] in {CLOCK POWER GROUND}} {
-            set protected 1
-            break
+    if {[use_native_scan ::grt::mls_protected_net_names]} {
+      foreach name [::grt::mls_protected_net_names] {
+        lappend protected_names [json_string $name]
+      }
+    } else {
+      # MTerm handles and types are stable throughout this read-only scan.
+      # Keep the cache local to this run; every visited ITerm still resolves its
+      # own master terminal, and first-read lookup errors must propagate.
+      set protected_mterm_cache [dict create]
+      foreach net [$block getNets] {
+        set protected [expr {[$net getSigType] ne "SIGNAL" || [$net isSpecial]}]
+        if {!$protected} {
+          foreach iterm [$net getITerms] {
+            set mterm [$iterm getMTerm]
+            if {![dict exists $protected_mterm_cache $mterm]} {
+              dict set protected_mterm_cache $mterm \
+                [expr {[$mterm getSigType] in {CLOCK POWER GROUND}}]
+            }
+            if {[dict get $protected_mterm_cache $mterm]} {
+              set protected 1
+              break
+            }
           }
         }
+        if {$protected} { lappend protected_names [json_string [$net getName]] }
       }
-      if {$protected} { lappend protected_names [json_string [$net getName]] }
     }
     puts $protected_fp "\[[join $protected_names ,]\]"
     close $protected_fp
+    puts "MLS_STAGE protected_scan_ms=[expr {[clock milliseconds] - $stage_start}]"
     set command [list python3 $script_dir/mls_planner.py --manifest $manifest \
       --plan $plan --apply-tcl $apply_tcl --protected-nets $protected_path]
     if {[info exists ::env(MLS_CONFIG)] && $::env(MLS_CONFIG) ne ""} {

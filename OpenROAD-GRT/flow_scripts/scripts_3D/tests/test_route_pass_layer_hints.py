@@ -58,6 +58,7 @@ if {$::env(TEST_RESISTANCE_API)} {
   proc set_net_resistance_aware {name} {puts "SELECT $name"}
 }
 '''
+        program += (SCRIPT_DIR / "routing_capacity.tcl").read_text()
         program += function
         program += r'''
 if {[catch {
@@ -73,6 +74,7 @@ if {[catch {
                                TEST_MIN=f"metal{interval[0]}", TEST_MAX=f"metal{interval[1]}",
                                TEST_GUIDE=str(guide), TEST_REPORT=str(report))
             environment.pop("MACRO_EXTENSION", None)
+            environment.pop("GRT_LAYER_ADJUSTMENTS", None)
             result = subprocess.run(["tclsh"], input=program, env=environment,
                                     text=True, capture_output=True, check=False)
             empty_files = guide.exists() and report.exists() and not guide.read_bytes() and not report.read_bytes()

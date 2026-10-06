@@ -28,6 +28,15 @@ using sta::LibertyPort;
 %import <stl.i>
 %import <std_vector.i>
 %template(vector_int) std::vector<int>;
+// Return batched MLS records as values, without evaluating names as Tcl code.
+%typemap(out) std::vector<std::string> {
+  Tcl_Obj* list = Tcl_NewListObj(0, nullptr);
+  for (const auto& value : $1) {
+    Tcl_ListObjAppendElement(interp, list,
+                            Tcl_NewStringObj(value.data(), value.size()));
+  }
+  Tcl_SetObjResult(interp, list);
+}
 
 %inline %{
 
@@ -228,6 +237,18 @@ void
 export_mls_manifest(const char* file_name)
 {
   getGlobalRouter()->exportMlsManifest(file_name);
+}
+
+std::vector<std::string>
+mls_protected_net_names()
+{
+  return getGlobalRouter()->getMlsProtectedNetNames();
+}
+
+std::vector<std::string>
+mls_instance_snapshot()
+{
+  return getGlobalRouter()->getMlsInstanceSnapshot();
 }
 
 void

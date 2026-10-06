@@ -9,6 +9,9 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
+from threading import Event, Thread
+import time
 import traceback
 
 from official_common import (BASE, CONTEST, EVALUATOR, VALIDATION, clean_environment,
@@ -36,6 +39,122 @@ def candidate_threads(plan: dict) -> int:
             or not 1 <= plan['build_threads'] <= 32):
         raise ValueError('Invalid thread budget')
     return threads
+
+
+def platform_file_state(directory: Path) -> dict:
+    """Enumerate every regular collateral file without silently omitting links."""
+    if directory.is_symlink():
+        raise ValueError('Platform directory must not be a symlink: ' + str(directory))
+    if not directory.is_dir():
+        raise ValueError('Platform directory is unavailable: ' + str(directory))
+    def walk_error(error):
+        raise error
+    state = {}
+    for parent, directories, files in os.walk(directory, onerror=walk_error):
+        for name in directories + files:
+            path = Path(parent) / name
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError('Platform contains a non-regular file: ' + str(path))
+            state[str(path.relative_to(directory))] = (info.st_dev, info.st_ino,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if not state:
+        raise ValueError('Platform contains no collateral files: ' + str(directory))
+    return state
+
+
+def platform_fingerprint(directory: Path) -> dict[str, str]:
+    before = platform_file_state(directory)
+    hashes = {name: digest(directory / name) for name in sorted(before)}
+    if platform_file_state(directory) != before:
+        raise ValueError('Platform changed while its files were being fingerprinted')
+    return hashes
+
+
+def platform_difference(expected: dict, actual: dict) -> dict:
+    return {'missing': sorted(expected.keys() - actual.keys()),
+            'unexpected': sorted(actual.keys() - expected.keys()),
+            'changed': sorted(name for name in expected.keys() & actual.keys()
+                              if expected[name] != actual[name])}
+
+
+def run_evaluation_with_platform_audit(command: list[str], env: dict, log: Path,
+        cwd: Path, work: Path, input_platform: Path, expected: dict) -> dict:
+    """Passively capture the platform before the official EXIT trap removes it.
+
+    The flow's first platform-use log line occurs after materialization/overlay.
+    Waiting for that line avoids hashing a partially copied platform. The fixed
+    launcher, environment and command are passed through without interception.
+    """
+    evidence_path = log.parent / 'evaluation_platform.json'
+    evidence = {'schema_version': 1, 'scope': 'evaluation_time_platform_snapshot',
+                'status': 'waiting', 'input_platform': str(input_platform),
+                'input_file_sha256': expected, 'observation_log': str(log),
+                'method': 'passive_snapshot_after_official_platform_use_log',
+                'continuous_mutation_monitor': False}
+    stop = Event()
+
+    def observe():
+        start = time.monotonic()
+        try:
+            while not stop.is_set() and not log.is_file():
+                stop.wait(0.05)
+            if stop.is_set():
+                raise ValueError('Evaluator ended before platform observation started')
+            with log.open(errors='replace') as stream:
+                pending = ''
+                while not stop.is_set():
+                    pending += stream.read()
+                    lines = pending.split('\n')
+                    pending = lines.pop()
+                    for line in lines:
+                        match = re.fullmatch(r'\[INFO\]\[FLOW\] Using platform directory (.+)', line)
+                        if match is None:
+                            continue
+                        materialized = Path(match.group(1)).resolve()
+                        relative = materialized.relative_to(work.resolve())
+                        parts = relative.parts
+                        if (len(parts) != 6 or parts[0] != 'evaluator-submissions'
+                                or parts[2:] != ('OpenROAD-3D', 'flow', 'platforms', input_platform.name)):
+                            raise ValueError('Official flow reported an unexpected materialized platform path')
+                        evidence.update(materialized_platform=str(materialized),
+                                        platform_use_log_line=line)
+                        hash_start = time.monotonic()
+                        hashes = platform_fingerprint(materialized)
+                        evidence['fingerprint_wall_seconds'] = round(time.monotonic() - hash_start, 3)
+                        if stop.is_set():
+                            raise ValueError('Evaluator ended before the full platform snapshot completed')
+                        difference = platform_difference(expected, hashes)
+                        identical = not any(difference.values())
+                        evidence.update(status='complete' if identical else 'mismatch',
+                            captured_utc=datetime.now(timezone.utc).isoformat(),
+                            observed_while_evaluator_running=True,
+                            materialized_file_sha256=hashes, file_count=len(hashes),
+                            matches_input=identical, difference=difference)
+                        return
+                    stop.wait(0.1)
+            raise ValueError('Official flow platform-use log was not observed during evaluation')
+        except Exception as error:
+            evidence.update(status='failed', error=str(error))
+        finally:
+            evidence['observation_wall_seconds'] = round(time.monotonic() - start, 3)
+            write_manifest(evidence_path, evidence)
+
+    observer = Thread(target=observe, name='official-platform-audit', daemon=True)
+    observer.start()
+    try:
+        stage = run_stage(command, env, log, cwd)
+    finally:
+        stop.set()
+        observer.join()
+    stage['platform_audit'] = {'path': str(evidence_path), 'sha256': digest(evidence_path),
+        'status': evidence['status'], 'matches_input': evidence.get('matches_input', False),
+        'file_count': evidence.get('file_count', 0)}
+    if evidence['status'] != 'complete':
+        stage.update(status='failed', error='Evaluation-time full platform identity was not verified; see ' + str(evidence_path))
+    return stage
 
 
 def main() -> int:
@@ -111,6 +230,7 @@ def main() -> int:
         result['container'] = image
         inputs = Path(plan['input_root'])
         platform = inputs / 'platforms/nangate45_3D'
+        result['input_platform_sha256'] = platform_fingerprint(platform)
         result['input_sha256'] = {case: {name: digest(inputs / 'cases' / case / 'grt_input' / name)
             for name in ('4_1_cts.def', '4_cts.sdc')} for case in plan['cases']}
         if 'bp_fe' in plan['cases'] and result['input_sha256']['bp_fe'] != reference['bp_fe_input_sha256']:
@@ -215,11 +335,14 @@ def main() -> int:
             if work.exists(): raise ValueError('Evaluator work directory was not fresh')
             eval_env = dict(env, CONTEST_ROOT=str(repository), WORK_ROOT=str(work),
                 MATERIALIZED_OPEN3D=str(work / 'OpenROAD-3D'), CONTEST_EVAL_THREADS=str(threads))
-            stage = run_stage([str(CONTEST), 'evaluate', case, str(inputs), record['candidate_dir'], str(reports)],
-                eval_env, directory / 'evaluate.log', repository)
+            stage = run_evaluation_with_platform_audit(
+                [str(CONTEST), 'evaluate', case, str(inputs), record['candidate_dir'], str(reports)],
+                eval_env, directory / 'evaluate.log', repository, work, platform, result['input_platform_sha256'])
             stage.update(evaluator_invoked=True, full_evaluation_completed=False, work_root=str(work), report_dir=str(reports))
             try:
                 if stage['exit_code']: raise RuntimeError('Official contest evaluate failed')
+                if stage['platform_audit']['status'] != 'complete':
+                    raise ValueError('Evaluation-time platform differs from the input or could not be captured')
                 metrics = read_json(reports / 'metrics.json'); timing = read_json(reports / '6_report.json')
                 if metrics.get('legal') is not True: raise ValueError('Official metrics are not legal')
                 for key in ('drc', 'drt_wirelength_um', 'tns_ns', 'wns_ns', 'hbt_count'):

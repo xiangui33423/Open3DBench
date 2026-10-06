@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from die_net_common import iter_nets
+from guide_spatial_index import GuideSpatialIndex, INDEX_THRESHOLD
 
 GCELL_STEP = 4200
 BOTTOM_DIE_MAX_LAYER = 10
@@ -110,8 +111,11 @@ def pin_covered(x: int, y: int, rects: list[GuideRect], margin: int) -> bool:
 
 def first_covering_rect(
     x: int, y: int, rects: list[GuideRect], margin: int,
+    index: GuideSpatialIndex | None = None,
 ) -> int | None:
     """Return the first covering rectangle, preserving guide-file order."""
+    if index is not None:
+        return index.first_covering_rect(x, y, margin)
     for idx, rect in enumerate(rects):
         if (
             rect.x1 - margin <= x <= rect.x2 + margin
@@ -142,7 +146,9 @@ def xy_touches(a: GuideRect, b: GuideRect, margin: int = 1) -> bool:
     )
 
 
-def guide_component_ids(rects: list[GuideRect]) -> tuple[list[int], list[int]]:
+def guide_component_ids(
+    rects: list[GuideRect], index: GuideSpatialIndex | None = None,
+) -> tuple[list[int], list[int]]:
     """Compute same-layer and 3D component ids in one rectangle-pair pass.
 
     Same-layer reports compare the original layer spelling. 3D connectivity
@@ -151,6 +157,8 @@ def guide_component_ids(rects: list[GuideRect]) -> tuple[list[int], list[int]]:
     """
     if not rects:
         return [], []
+    if index is None and len(rects) >= INDEX_THRESHOLD:
+        index = GuideSpatialIndex(rects)
     same_parent = list(range(len(rects)))
     three_d_parent = list(range(len(rects)))
     layer_ids = [metal_index(rect.layer) for rect in rects]
@@ -168,7 +176,8 @@ def guide_component_ids(rects: list[GuideRect]) -> tuple[list[int], list[int]]:
 
     for i in range(len(rects)):
         li = layer_ids[i]
-        for j in range(i + 1, len(rects)):
+        neighbors = index.later_neighbors(i) if index is not None else range(i + 1, len(rects))
+        for j in neighbors:
             lj = layer_ids[j]
             same_layer = rects[i].layer == rects[j].layer
             if same_layer:
@@ -200,10 +209,11 @@ def pin_component_count(
     """Count distinct 3D guide components touched by covered pins."""
     if not rects or not pins:
         return 0
-    components = guide_components_3d(rects)
+    index = GuideSpatialIndex(rects) if len(rects) >= INDEX_THRESHOLD else None
+    components = guide_component_ids(rects, index)[1]
     pin_components: set[int] = set()
     for _inst, x, y in pins:
-        idx = first_covering_rect(x, y, rects, margin)
+        idx = first_covering_rect(x, y, rects, margin, index)
         if idx is not None:
             pin_components.add(components[idx])
     return len(pin_components)
@@ -307,9 +317,10 @@ def diagnose_net(
     """Build one net-level connectivity report."""
     uncovered = 0
     hbt_uncovered = 0
+    index = GuideSpatialIndex(rects) if len(rects) >= INDEX_THRESHOLD else None
     covered_rects: set[int] = set()
     for inst, x, y in pins:
-        idx = first_covering_rect(x, y, rects, margin)
+        idx = first_covering_rect(x, y, rects, margin, index)
         if idx is None:
             uncovered += 1
             if inst.startswith(("HBT_", "LS_HBT_")):
@@ -320,7 +331,7 @@ def diagnose_net(
     cc = 0
     pin_cc = -1
     if len(rects) <= max_cc_rects:
-        same_components, components_3d = guide_component_ids(rects)
+        same_components, components_3d = guide_component_ids(rects, index)
         cc = len(set(same_components))
         pin_cc = len({components_3d[idx] for idx in covered_rects})
     illegal_layers = illegal_layer_count(net, rects)

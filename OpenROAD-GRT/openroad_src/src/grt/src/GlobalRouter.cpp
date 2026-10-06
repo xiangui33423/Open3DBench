@@ -21,6 +21,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -254,6 +255,70 @@ void GlobalRouter::exportMlsManifest(const char* file_name)
   if (!out) {
     logger_->error(GRT, 722, "Failed writing MLS manifest {}.", file_name);
   }
+}
+
+std::vector<std::string> GlobalRouter::getMlsProtectedNetNames()
+{
+  auto* chip = db_->getChip();
+  auto* block = chip == nullptr ? nullptr : chip->getBlock();
+  if (block == nullptr) {
+    logger_->error(GRT, 729, "MLS protection scan requires a loaded design.");
+  }
+  std::vector<std::string> names;
+  // Match prepare_mls.tcl's net order, short circuit, and terminal-type rule.
+  // This read-only query stores no handles or cached types across calls.
+  for (auto* net : block->getNets()) {
+    bool protect = net->getSigType() != odb::dbSigType::SIGNAL || net->isSpecial();
+    if (!protect) {
+      for (auto* iterm : net->getITerms()) {
+        auto* mterm = iterm->getMTerm();
+        if (mterm == nullptr) {
+          logger_->error(GRT, 731, "MLS protection scan found a missing master terminal.");
+        }
+        const auto type = mterm->getSigType();
+        if (type == odb::dbSigType::CLOCK || type == odb::dbSigType::POWER
+            || type == odb::dbSigType::GROUND) {
+          protect = true;
+          break;
+        }
+      }
+    }
+    if (protect) {
+      names.push_back(net->getName());
+    }
+  }
+  return names;
+}
+
+std::vector<std::string> GlobalRouter::getMlsInstanceSnapshot()
+{
+  auto* chip = db_->getChip();
+  auto* block = chip == nullptr ? nullptr : chip->getBlock();
+  if (block == nullptr) {
+    logger_->error(GRT, 730, "MLS component snapshot requires a loaded design.");
+  }
+  // Flat records preserve arbitrary names through the Tcl list typemap. The
+  // original Tcl dict and check_snapshot still compare every protected field.
+  std::vector<std::string> records;
+  records.reserve(block->getInsts().size() * 6);
+  for (auto* inst : block->getInsts()) {
+    const std::string name = inst->getName();
+    if (mlsIsHbt(name)) {
+      continue;
+    }
+    const odb::Point origin = inst->getOrigin();
+    auto* master = inst->getMaster();
+    if (master == nullptr) {
+      logger_->error(GRT, 732, "MLS component snapshot found a missing master.");
+    }
+    records.push_back(name);
+    records.push_back(master->getName());
+    records.push_back(std::to_string(origin.x()));
+    records.push_back(std::to_string(origin.y()));
+    records.push_back(inst->getOrient().getString());
+    records.push_back(inst->getPlacementStatus().getString());
+  }
+  return records;
 }
 
 void GlobalRouter::resetDieRoutingPass()
@@ -1603,6 +1668,19 @@ void GlobalRouter::findFastRoutePins(Net* net,
   int max_routing_layer;
   getNetLayerRange(net->getDbNet(), min_routing_layer, max_routing_layer);
 
+  // Keep the vector as the ordered output. The set is only a membership
+  // index: duplicate drivers must not change the original root choice.
+  bool index_pins = false;
+  const auto hash_pin = [](const RoutePt& point) {
+    size_t hash = std::hash<int>{}(point.x());
+    for (const int coordinate : {point.y(), point.layer()}) {
+      hash ^= std::hash<int>{}(coordinate) + static_cast<size_t>(0x9e3779b9U)
+              + (hash << 6) + (hash >> 2);
+    }
+    return hash;
+  };
+  std::unordered_set<RoutePt, decltype(hash_pin)> indexed_pins(0, hash_pin);
+
   for (Pin& pin : net->getPins()) {
     odb::Point pin_position = pin.getOnGridPosition();
     int conn_layer = pin.getConnectionLayer();
@@ -1614,12 +1692,24 @@ void GlobalRouter::findFastRoutePins(Net* net,
     if (pinX >= 0 && pinX < grid_->getXGrids() && pinY >= -1
         && pinY < grid_->getYGrids() && conn_layer <= grid_->getNumLayers()
         && conn_layer > 0) {
+      // Small or highly duplicated pin sets are cheaper to scan directly.
+      // Switch only after enough distinct points have actually accumulated.
+      if (!index_pins && pins_on_grid.size() > 256) {
+        indexed_pins.reserve(
+            std::min<size_t>(pins_on_grid.size() + net->getNumPins(), 4096));
+        indexed_pins.insert(pins_on_grid.begin(), pins_on_grid.end());
+        index_pins = true;
+      }
       bool duplicated = false;
-      for (RoutePt& pin_pos : pins_on_grid) {
-        if (pinX == pin_pos.x() && pinY == pin_pos.y()
-            && conn_layer == pin_pos.layer()) {
-          duplicated = true;
-          break;
+      if (index_pins) {
+        duplicated = !indexed_pins.emplace(pinX, pinY, conn_layer).second;
+      } else {
+        for (RoutePt& pin_pos : pins_on_grid) {
+          if (pinX == pin_pos.x() && pinY == pin_pos.y()
+              && conn_layer == pin_pos.layer()) {
+            duplicated = true;
+            break;
+          }
         }
       }
 
@@ -4899,7 +4989,7 @@ void GlobalRouter::findTrackPitches(int max_layer)
 
 static bool nameLess(const Net* a, const Net* b)
 {
-  return a->getName() < b->getName();
+  return std::strcmp(a->getConstName(), b->getConstName()) < 0;
 }
 
 std::vector<Net*> GlobalRouter::findNets(bool init_clock_nets)

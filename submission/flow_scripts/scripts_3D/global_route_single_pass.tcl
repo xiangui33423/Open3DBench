@@ -5,6 +5,7 @@ set grt_input_odb [expr {[info exists ::env(GRT_INPUT_ODB)] ? \
   $::env(GRT_INPUT_ODB) : "4_cts.odb"}]
 puts "GRT pass input ODB: $grt_input_odb"
 load_design $grt_input_odb 4_cts.sdc "Single-pass die routing"
+source [file join [file dirname [file normalize [info script]]] routing_capacity.tcl]
 
 if {[info exist env(FASTROUTE_TCL)]} {
   source $::env(FASTROUTE_TCL)
@@ -17,6 +18,7 @@ proc configure_die_routing_layers {min_layer max_layer} {
   }
   set_global_routing_layer_adjustment ${min_layer}-${max_layer} $adj
   set_routing_layers -signal ${min_layer}-${max_layer}
+  grt_capacity::apply $min_layer $max_layer
   if {[info exist env(MACRO_EXTENSION)]} {
     set_macro_extension $env(MACRO_EXTENSION)
   }
@@ -78,14 +80,22 @@ set pass_max $::env(GRT_PASS_MAX_LAYER)
 set grt_args [expr {[info exists ::env(GLOBAL_ROUTE_ARGS)] ? $::env(GLOBAL_ROUTE_ARGS) : \
   {-congestion_iterations 2 -congestion_report_iter_step 5 -verbose}}]
 
-configure_die_routing_layers $pass_min $pass_max
-
 set pass_nets [read_net_list $::env(GRT_PASS_NET_LIST)]
+set congestion_report $::env(REPORTS_DIR)/congestion_upper.rpt
+if {[llength $pass_nets] == 0} {
+  # OpenROAD interprets an empty queue as every net, so do not invoke GRT.
+  foreach path [list $::env(GRT_PASS_GUIDE_OUT) $congestion_report] {
+    set fp [open $path w]
+    close $fp
+  }
+  puts "Single-pass GRT: empty die $pass_min-$pass_max; routing skipped"
+} else {
+configure_die_routing_layers $pass_min $pass_max
 apply_layer_ranges $pass_nets $pass_min $pass_max
 set queued [add_nets_to_route_from_file $::env(GRT_PASS_NET_LIST)]
+if {$queued == 0} { error "No classified nets found for nonempty routing pass" }
 puts "Single-pass GRT: queued $queued nets ($pass_min-$pass_max) -> $::env(GRT_PASS_GUIDE_OUT)"
 
-set congestion_report $::env(REPORTS_DIR)/congestion_upper.rpt
 set report_fp [open $congestion_report w]
 close $report_fp
 
@@ -93,3 +103,4 @@ global_route -guide_file $::env(GRT_PASS_GUIDE_OUT) \
   -congestion_report_file $congestion_report \
   {*}$grt_args
 write_guides $::env(GRT_PASS_GUIDE_OUT)
+}
