@@ -111,7 +111,7 @@ def evaluate(label: str, source: Path, args: argparse.Namespace, provenance: dic
     shutil.copy2(source, copied_source)
     if digest(copied_source) != source_sha:
         raise ValueError('Candidate ODB changed while copying it into the isolated experiment')
-    work = REPOSITORY / '.contest/optimization_v2' / args.case / f'{label}-{batch}'
+    work = args.work_root / args.case / f'{label}-{batch}'
     runtime = args.runtime_root
     contest = runtime / 'opt/contest'
     fixed = contest / 'evaluator-flow/OpenROAD-3D'
@@ -142,7 +142,7 @@ def evaluate(label: str, source: Path, args: argparse.Namespace, provenance: dic
         ['python3', str(contest / 'validation/validate_submission.py'), '--reference-def', str(case_root / 'grt_input/4_1_cts.def'),
          '--submission-def', str(canonical / 'submission.def'), '--canonical-guide', str(canonical / 'route.guide'),
          '--die-list-dir', str(canonical / 'die_net_lists'), '--report', str(report / 'legality.json')],
-        [str(contest / 'evaluator/bin/evaluate'), '--case', args.case, '--input', str(case_root),
+        [str(args.evaluator_launcher or contest / 'evaluator/bin/evaluate'), '--case', args.case, '--input', str(case_root),
          '--submission', str(canonical / '5_1_grt.odb'), '--guide', str(canonical / 'route.guide'),
          '--report-dir', str(report), '--threads', str(args.threads)],
     ]
@@ -152,6 +152,9 @@ def evaluate(label: str, source: Path, args: argparse.Namespace, provenance: dic
         'work_dir': str(work), 'threads': args.threads, 'end_iter': args.end_iter,
         'official_iteration_setting': args.end_iter == 2, 'provenance': provenance,
         'routing_manifest': read_json(source.parent / 'run_manifest.json'),
+        'evaluator_launcher': ({'path': str(args.evaluator_launcher.resolve(strict=True)),
+                                'sha256': digest(args.evaluator_launcher)}
+                               if args.evaluator_launcher else None),
         'commands': commands, 'environment': {key: env[key] for key in env if key.startswith(('CONTEST_', 'EVALUATOR_', 'EVAL_', 'WORK_ROOT', 'MATERIALIZED_', 'HBT_', 'BOTTOM_', 'UPPER_', 'NUM_CORES', 'OMP_', 'FLOW_HOME'))},
         'status': 'snapshot_started',
     }
@@ -243,6 +246,10 @@ def main() -> int:
     parser.add_argument('--input-root', type=Path, default=DEFAULT_INPUT)
     parser.add_argument('--output-root', type=Path, default=REPOSITORY / 'reports/optimization_v2')
     parser.add_argument('--runtime-root', type=Path, default=Path('/tmp/open3dbench-contest-extracted'))
+    parser.add_argument('--work-root', type=Path, default=REPOSITORY / '.contest/optimization_v2',
+                        help='Isolated evaluator working storage; may be a RAM filesystem')
+    parser.add_argument('--evaluator-launcher', type=Path,
+                        help='Host compatibility launcher for the unchanged fixed evaluator')
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--jobs', type=int, default=1)
     parser.add_argument('--end-iter', type=int, default=2)
@@ -257,8 +264,10 @@ def main() -> int:
     candidates, reused = labels(args.candidate), labels(args.reuse_report)
     if reused.keys() - candidates.keys():
         parser.error('--reuse-report labels must also be --candidate labels')
-    for key in ('input_root', 'output_root', 'runtime_root'):
+    for key in ('input_root', 'output_root', 'runtime_root', 'work_root'):
         setattr(args, key, getattr(args, key).resolve())
+    if args.evaluator_launcher:
+        args.evaluator_launcher = args.evaluator_launcher.resolve(strict=True)
     args.output_root.mkdir(parents=True, exist_ok=True)
     provenance = verify_runtime(args.runtime_root)
     provenance['public_input_fingerprint'] = fingerprint_public_inputs(args.input_root, args.case)

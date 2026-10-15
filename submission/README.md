@@ -1,18 +1,14 @@
-# 第十三版：直接复用准备后的数据库检查信息
+# v16：固定两组高扇出共享候选
 
-本版以 v12 为基线，沿用 MLS/HBT、选层与容量策略。新原生接口从准备后的 OpenDB 导出分类与严格连通检查所需信息，省去中间 DEF 写入及重复解析；不支持的特殊 DEF 语法自动回退，错误或哈希不一致仍阻止发布。输入 master 扫描只读至 COMPONENTS 结束，输入摘要改为流式计算。
+本版主要优化 WNS/TNS，采用固定两组的共享分支规划和一次有界原生错误重试。对原官方成功的五例，固定完整 DRT2/RCX/STA 的 TNS 损失合计减少 **4.40%**，WNS 损失合计减少 **3.53%**，DRC 总数 **39079 → 34762（减少11.05%）**。已知官方成绩仍为 **24.01565788837513（24.02）**；新分数及目标27分尚未验证。
 
-全八例新旧提交 ODB、guide、MLS 计划和官方 canonical DEF/guide/ODB 逐字节一致，官方合法性通过；222 项生产、7 项支持及 14 项验证器篡改/留存测试通过。13 次真实原生导出与原 DEF writer/parser 对照通过，并确认数据库未改动。NDR 与供电/地参考名称由只读 Tcl 兼容性检查保护，查询不可用时回退原 DEF 路径。记录见 `reports/optimization_v13/all8_final_validation/runtime_report.json`。
+质量范围为 **四例新完整评测 + SW 已验证复用**，另有八例新 GRT/官方 canonical 合法性。FE 的 WNS 损失相对原官方值增加 **2.70%**，multi 的 TNS 损失增加 **4.20%**；整体收益主要来自 BP，逐例结果见仓库优化记录。quad 在2线程覆盖中触发原生 `GRT-0228`，新进程回退后通过，完整入口耗时1090.320秒；此例只有新合法性证据。服务器原有三例 `Input DEF file not found` 未验证修复。
 
-本地入口耗时来自共享宿主的 RAM 工作区，仅为观测；官方已知成绩仍为 23.00806162648646（23.01），尚未确认达到 25 分。预算 512/768 的时序实验与本推荐包分开保存，本包预算保持 384。
-
-## 构建和运行
+默认新增HBT预算上限384、分组上限2；GRT资源折减为M2 0.75、M3 0.65、其余层0.50。默认同一进程直接读原CTS DEF/SDC，再完成两个die的路由与严格检查，独立重开最终ODB后输出 `5_1_grt.odb`。具体策略及回退边界见 `ALGORITHM.md`，证据与限制见 `VALIDATION.md`；历史算法保留在 `HISTORY_V15_ALGORITHM.md`。
 
 ```bash
 bash build.sh 32
 bash run.sh <input_dir> <output_dir> <platform_dir> 32
 ```
 
-ZIP 根目录为 `run.sh`，输出为 `5_1_grt.odb`。`GRT_PREPARED_METADATA=def` 强制原 DEF 路径；`native` 要求新接口与兼容输入；默认 `auto` 自动回退。`GRT_SAVE_CHECKPOINTS=1` 保留准备阶段 ODB/DEF；`SUBMISSION_EXPORT_DEF=1` 从独立重开的最终 ODB 导出补充 DEF。全部层与严格连通检查、独立 ODB 重开及失败关闭仍执行。
-
-历史 v12 说明见 `HISTORY_V12.md`，完整算法及验证范围见 `ALGORITHM.md` 和 `VALIDATION.md`。保存的三个服务器缺输入 DEF 失败尚缺实际尝试路径，不能将本地八例合法性视为服务器问题已修复。
+FE/BP/SW在本机以8线程按v15/本版、再本版/v15各一轮进行完整入口配对：FE约快14.10%，BP约慢6.08%，SW基本持平。这是共享宿主的两次成对观测，不能代替服务器Runtime；不含随后哈希、归档或DRT评估耗时。旧v15文档及ZIP保持保存。

@@ -20,5 +20,8 @@
   "relocation_radius": 2,
   "relocation_max_moves": 65536,
   "relocation_min_improvement_um": 0.1,
-  "multi_branch_enabled": true
+  "multi_branch_enabled": true,
+  "multi_branch_adaptive_groups": false,
+  "multi_branch_tree_guard": false,
+  "multi_branch_max_groups": 2
 }

@@ -110,6 +110,35 @@ def run_openroad(exe: str, script: Path, env: dict[str, str], log: Path) -> floa
     return round(time.monotonic() - stage_start, 3)
 
 
+
+def route_with_policy_retry(exe: str, root: Path, env: dict[str, str], logs: Path):
+    """Retry a known router invariant from the immutable original design once.
+
+    Each run_openroad starts a fresh process; the entry script reloads the
+    original CTS input before preparing MLS. No partial routing is reused.
+    """
+    script = root / 'flow_scripts/scripts/global_route_die_by_die.tcl'
+    log = logs / 'global_route.log'
+    requested = root / 'flow_scripts/scripts_3D/mls_config.json'
+    fallback = root / 'flow_scripts/scripts_3D/mls_fallback_config.json'
+    started = time.monotonic()
+    try:
+        return run_openroad(exe, script, env, log), None
+    except RuntimeError as error:
+        match = re.search(r'^\[ERROR GRT-(0228|0254)\]', str(error), re.M)
+        # Custom policies and unrelated errors retain their normal failure.
+        if not match or env.get('MLS_CONFIG') != str(requested) or not fallback.is_file():
+            raise
+        shutil.copy2(log, logs / 'grt_failed_policy.log')
+        retry = {'error_code': 'GRT-' + match.group(1),
+                 'requested_config_sha256': file_sha256(requested),
+                 'fallback_config_sha256': file_sha256(fallback),
+                 'fresh_process_from_original_cts': True}
+        env['MLS_CONFIG'] = str(fallback)
+        run_openroad(exe, script, env, log)
+        return round(time.monotonic() - started, 3), retry
+
+
 def atomic_copy(source: Path, destination: Path) -> None:
     temporary = destination.with_name(destination.name + '.tmp')
     shutil.copy2(source, temporary)
@@ -177,7 +206,7 @@ def main() -> None:
         'set submission_lefs [list ' + ' '.join(tcl_quote(str(p)) for p in lefs) + ']\n' +
         'set submission_libs [list ' + ' '.join(tcl_quote(str(p)) for p in libs) + ']\n')
     env.setdefault('VALIDATE_DIE_GUIDES', '1')
-    env.setdefault('GRT_LAYER_ADJUSTMENTS', 'metal2=0.7,metal3=0.6')
+    env.setdefault('GRT_LAYER_ADJUSTMENTS', 'metal2=0.75,metal3=0.65')
     env.setdefault('GRT_HIGH_FANOUT_LAYERS', '1')
     # Public case configs allow overflow for the fixed detailed-route evaluator.
     env.setdefault('GLOBAL_ROUTE_ARGS', '-allow_congestion -congestion_iterations 1 -congestion_report_iter_step 5 -verbose')
@@ -198,7 +227,7 @@ def main() -> None:
             raise RuntimeError('Input conversion did not create 4_cts.odb')
     else:
         stage_seconds['load_input'] = 0.0
-    stage_seconds['global_route'] = run_openroad(exe, root / 'flow_scripts/scripts/global_route_die_by_die.tcl', env, logs / 'global_route.log')
+    stage_seconds['global_route'], grt_policy_retry = route_with_policy_retry(exe, root, env, logs)
     global_route_log = (logs / 'global_route.log').read_text()
     if input_mode == 'def' and 'SUBMISSION_LAYER_CLAMP_READY' not in global_route_log:
         raise RuntimeError('Direct DEF initialization or layer-clamp probe failed')
@@ -269,6 +298,7 @@ def main() -> None:
         'grt_capacity_adjustment_default': float(env.get('GLOBAL_ROUTING_LAYER_ADJUSTMENT', '0.5')),
         'grt_layer_adjustments_requested': env.get('GRT_LAYER_ADJUSTMENTS', ''),
         'global_route_args': env['GLOBAL_ROUTE_ARGS'],
+        'grt_policy_retry': grt_policy_retry,
         'grt_process_mode': process_mode, 'grt_input_mode': input_mode,
         'submission_export_def': export_def,
         'odb_bytes': odb_bytes, 'work_dir': str(work),

@@ -46,6 +46,8 @@ python3 submission/support/evaluate_candidates.py \
 
 `--input-root` 可指定包含 `cases/`、`platforms/` 的公开输入根目录，`--runtime-root` 可指定提取目录。`--legality-only` 仅验证合法性。默认 `--end-iter 2` 用于完整比较；0/1 为初筛，工具通过独立 make 参数包装器改动迭代参数，保留固定评测源码，但初筛指标不能与最终迭代 2 混作比较。
 
+`--work-root` 可把详细布线工作目录放到内存文件系统，默认仍使用仓库下的 `.contest/optimization_v2`。报告位置由 `--output-root` 单独指定。若宿主系统的动态库版本与镜像不同，`--evaluator-launcher` 可指定通过镜像动态加载器运行原始 `evaluator/bin/evaluate` 的兼容启动脚本；工具记录该脚本摘要，并继续校验原始评测文件。启动脚本只负责动态库兼容，完整评测仍使用固定两轮 DRT/RCX/STA。内存中的结果需要在结束后保存到持久目录。
+
 已有完整评测可显式复用；仍重新检查候选合法性，且要求 canonical DEF 和 guide 与旧报告逐字节一致：
 
 ```bash

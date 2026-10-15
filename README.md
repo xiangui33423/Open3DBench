@@ -62,7 +62,51 @@ Replace `bp_fe` and `baseline` to run another case or keep multiple experiment
 outputs. GRT results are stored under `output/`, and evaluation reports are
 stored under `reports/`.
 
-### Version 14 experimental routing optimization
+### Version 16 timing candidate — fixed two-group branches
+
+The current submission prioritizes WNS/TNS. Across the same five successful
+official cases, TNS loss decreases **4.40%**, the sum of WNS losses decreases
+**3.53%**, and DRC decreases **11.05%** versus the actual 24.02-point results.
+FE WNS and multi TNS regress; see the [per-case comparison](docs/optimization_v16.md).
+Four cases have new fixed DRT/RCX/STA; SW reuses complete quality after exact
+original ODB and GRT-guide identity checks. All eight fresh legality checks pass.
+
+The local eight-thread paired entries show FE about 14.1% faster, BP about 6.1%
+slower, and SW essentially unchanged versus v15. These observations do not
+predict server runtime or score. Use
+[the verified v16 submission package](submission_v16_fixed2_safe_revalidated_20261015.zip)
+for an official trial after reading [validation scope](submission/VALIDATION.md).
+The known official score remains **24.02**, and **27 is unverified**.
+The original v14/v15 ZIPs and documentation are preserved.
+
+### Historical Version 15 capacity candidate — complete local comparison
+
+The v15 submission entry reserved 75% of M2 and 65% of M3 routing capacity,
+starting from the actual 24.02-point v14 implementation. HBT planning and native
+routing overlays are unchanged. Across the five previously successful official
+cases, fixed DRT/RCX/STA measures **DRC 39079 → 34849 (−10.82%)**, **WNS loss
+−0.38%**, and **TNS loss +0.28%**. BE has a timing regression and swerv regresses
+slightly; this is a measured tradeoff, not a verified official score increase.
+
+All eight local official legality checks pass. Existing production tests (222),
+new tree-guard tests (4), and support tests (7) pass. Two paired eight-thread entry
+runs per variant observe FE +1.26% and BP +1.03% runtime on this shared host;
+these values do not predict server runtime. The stronger 80%/70% candidate was
+measured only on FE/BE and is not the global recommendation.
+
+Use the local `submission_v15_capacity75.zip` for an official trial. The original
+24.02-point ZIP is preserved. **27 points remains unverified**, and the three
+server input-DEF errors have no verified repair. See the [complete comparison](docs/optimization_v15.md)
+and [machine-readable measurements and release identity](docs/optimization_v15_metrics.json).
+
+### Version 14 routing policy — official score 24.02
+
+The latest saved official result (`result/scoring_result-6/scores.json`) is
+**24.01565788837513 (24.02 displayed)**. Five cases completed; `ariane133`,
+`ariane136`, and `bp_quad` reported `Input DEF file not found`. The submitted
+execution sources match `submission_v14_tree_guard_experimental.zip`. These
+server results update the previously unverified score in the historical v14
+release record. A score of 27 has not been established.
 
 The [v14 tree-guard source patch](experiments/v14_tree_guard.patch)
 combines v13's runtime implementation with adaptive 4/8/16 receiver grouping,
@@ -85,33 +129,32 @@ BP compares a historical 12-thread reference with an 8-thread candidate; BE uses
 The final experimental archive passed 44 existing offline regressions after the
 host restart, plus four geometric-kernel and input-validation checks.
 
-The tracked source contains the stable v13 implementation. The experimental
-patch updates the planner and configuration in both `OpenROAD-GRT/flow_scripts/`
-and `submission/flow_scripts/`, so local packaging preserves the selected policy.
-To try v14 with the tracked source, apply the patch before building:
+At the v14 release, the planner and configuration in both
+`OpenROAD-GRT/flow_scripts/` and `submission/flow_scripts/` matched that policy.
+The archived patch records the historical change from v13; the current v16
+configuration is described above. Build the current submission with:
 
 ```bash
-git apply --check experiments/v14_tree_guard.patch
-git apply experiments/v14_tree_guard.patch
 bash submission/build.sh 32
 ```
 
-The patch enables `multi_branch_adaptive_groups` and `multi_branch_tree_guard`.
+The historical v14 patch enabled `multi_branch_adaptive_groups` and `multi_branch_tree_guard`.
 Each alternative must preserve the original 8-receiver grouping as an available
 fallback and pass the receiver-path guards. It must not increase maximum leaf
 group load, whole-family HPWL, integer rectilinear MST length, or HBT count.
-The source documentation in `submission/` still describes stable v13; this
-section and the linked measurements describe the v14 experiment.
+The historical v13 algorithm description is supplemented by the geometric
+guards described here and in the linked measurements.
 The whole-family geometric check draws on
 [rectilinear minimum spanning tree construction](https://users.ece.northwestern.edu/~haizhou/publications/zhou02ipl.pdf);
 its geometric bounds do not guarantee better extracted timing.
 
-A separate low-layer capacity experiment reduced FE's DRC by 18.33%. Its remaining
+An earlier low-layer capacity experiment reduced FE's DRC by 18.33%. Its remaining
 BP, BE, swerv quality runs and final all-eight comparison were interrupted before
 completion could be verified after the host restart. It is not included in the
-tree-guard patch. The known official score remains 23.01; 25 is unverified.
+tree-guard patch. The latest official score is 24.02; further score gains
+require a new server run.
 
-### Stable MLS submission, version 13
+### Historical stable MLS submission, version 13
 
 The v13 package uses native prepared metadata and streaming input discovery. All eight official-container legality and physical/canonical byte-identity comparisons with v12 pass. The routing policy is unchanged. See `reports/optimization_v13/FINAL_RELEASE.json` and `submission/README.md`. The new official score remains unverified.
 

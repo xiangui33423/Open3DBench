@@ -1,0 +1,29 @@
+{
+  "purpose": "Preserve exact v15 documentation and existing user changes before v16 rewrite",
+  "files": {
+    "README.md": {
+      "archived_path": "docs/history/v15_before_v16/README.md",
+      "sha256": "6191a9a130468626e85a05efd127d58227b86f88f1cf00b2146df2fefa39bcda"
+    },
+    "OpenROAD-GRT/README.md": {
+      "archived_path": "docs/history/v15_before_v16/OpenROAD-GRT/README.md",
+      "sha256": "ecca4816f614eca1dbf8d807defa799b832524c57b1f99b32dbebf9690bbd8e5"
+    },
+    "OpenROAD-GRT/ALGORITHM.md": {
+      "archived_path": "docs/history/v15_before_v16/OpenROAD-GRT/ALGORITHM.md",
+      "sha256": "5dec12c17d74352bf25148ef834c486b0d608ef2fb2b7124eb0947bb0abbd14e"
+    },
+    "submission/README.md": {
+      "archived_path": "docs/history/v15_before_v16/submission/README.md",
+      "sha256": "21062399e06bcc31b03fc428d57e5c7741d81345194b2928a23f55c2fb27f12e"
+    },
+    "submission/ALGORITHM.md": {
+      "archived_path": "docs/history/v15_before_v16/submission/ALGORITHM.md",
+      "sha256": "5dec12c17d74352bf25148ef834c486b0d608ef2fb2b7124eb0947bb0abbd14e"
+    },
+    "submission/VALIDATION.md": {
+      "archived_path": "docs/history/v15_before_v16/submission/VALIDATION.md",
+      "sha256": "435f256c80d8d4b0d1ac4a39bec0af2460ef04f69fdde65688135abb9a688d43"
+    }
+  }
+}

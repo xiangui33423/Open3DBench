@@ -1,0 +1,538 @@
+{
+  "known_official_score": 24.01565788837513,
+  "target_score": 27,
+  "new_official_score": null,
+  "target_verified": false,
+  "scope": "Native execution of pinned official 20260914 DRT2/RCX/STA; local runtime is not server runtime.",
+  "failed_server_cases": {
+    "ariane133": "Input DEF file not found",
+    "ariane136": "Input DEF file not found",
+    "bp_quad": "Input DEF file not found"
+  },
+  "failure_repair_verified": false,
+  "scoring_formula_available": false,
+  "variants": {
+    "baseline": {
+      "legal_cases": [
+        "bp_fe"
+      ],
+      "full_quality_cases": [
+        "bp_fe"
+      ],
+      "covers_all_eight_legality": false,
+      "covers_five_official_successes": false,
+      "same_case_aggregate": {
+        "tns_ns": {
+          "official_loss_sum": 6544.23,
+          "candidate_loss_sum": 6544.23,
+          "loss_reduction_percent": 0.0
+        },
+        "wns_ns": {
+          "official_loss_sum": 3.24734,
+          "candidate_loss_sum": 3.24734,
+          "loss_reduction_percent": 0.0
+        },
+        "drc": {
+          "official_loss_sum": 1811,
+          "candidate_loss_sum": 1811,
+          "loss_reduction_percent": 0.0
+        },
+        "drt_wirelength_um": {
+          "official_loss_sum": 1359350.51,
+          "candidate_loss_sum": 1359350.51,
+          "loss_reduction_percent": 0.0
+        },
+        "hbt_count": {
+          "official_loss_sum": 1533,
+          "candidate_loss_sum": 1533,
+          "loss_reduction_percent": 0.0
+        }
+      }
+    },
+    "capacity75": {
+      "legal_cases": [
+        "ariane133",
+        "ariane136",
+        "bp",
+        "bp_be",
+        "bp_fe",
+        "bp_multi",
+        "bp_quad",
+        "swerv_wrapper"
+      ],
+      "full_quality_cases": [
+        "bp",
+        "bp_be",
+        "bp_fe",
+        "bp_multi",
+        "swerv_wrapper"
+      ],
+      "covers_all_eight_legality": true,
+      "covers_five_official_successes": true,
+      "same_case_aggregate": {
+        "tns_ns": {
+          "official_loss_sum": 257645.57,
+          "candidate_loss_sum": 258376.82,
+          "loss_reduction_percent": -0.2838201332163406
+        },
+        "wns_ns": {
+          "official_loss_sum": 47.79110000000001,
+          "candidate_loss_sum": 47.61111,
+          "loss_reduction_percent": 0.376618240634785
+        },
+        "drc": {
+          "official_loss_sum": 39079,
+          "candidate_loss_sum": 34849,
+          "loss_reduction_percent": 10.824227846157783
+        },
+        "drt_wirelength_um": {
+          "official_loss_sum": 19100978.669999998,
+          "candidate_loss_sum": 19099905.509999998,
+          "loss_reduction_percent": 0.005618350863276207
+        },
+        "hbt_count": {
+          "official_loss_sum": 12371,
+          "candidate_loss_sum": 12371,
+          "loss_reduction_percent": 0.0
+        }
+      }
+    },
+    "capacity80": {
+      "legal_cases": [
+        "bp_be",
+        "bp_fe"
+      ],
+      "full_quality_cases": [
+        "bp_be",
+        "bp_fe"
+      ],
+      "covers_all_eight_legality": false,
+      "covers_five_official_successes": false,
+      "same_case_aggregate": {
+        "tns_ns": {
+          "official_loss_sum": 13168.24,
+          "candidate_loss_sum": 13320.42,
+          "loss_reduction_percent": -1.1556593743734949
+        },
+        "wns_ns": {
+          "official_loss_sum": 7.0494699999999995,
+          "candidate_loss_sum": 7.223039999999999,
+          "loss_reduction_percent": -2.462170914976584
+        },
+        "drc": {
+          "official_loss_sum": 6512,
+          "candidate_loss_sum": 5409,
+          "loss_reduction_percent": 16.93796068796069
+        },
+        "drt_wirelength_um": {
+          "official_loss_sum": 3682135.8,
+          "candidate_loss_sum": 3687060.08,
+          "loss_reduction_percent": -0.1337343397275098
+        },
+        "hbt_count": {
+          "official_loss_sum": 3022,
+          "candidate_loss_sum": 3022,
+          "loss_reduction_percent": 0.0
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "case": "ariane133",
+      "label": "capacity75",
+      "status": "legal_only",
+      "legal": true,
+      "source_odb_sha256": "1b19e75e650742f175c81abb1748eaf7f183488d4afaaf80dad34a8c90baf6de",
+      "metrics": {},
+      "receipt": "reports/optimization_v15/quality/ariane133/capacity75-20261014T035151Z-5e19d7/retention.json",
+      "receipt_sha256": "e2fe97bbf73d90fc143342e84d2f34c454f667ffb32690f57929a2fbedda5b1c"
+    },
+    {
+      "case": "ariane136",
+      "label": "capacity75",
+      "status": "legal_only",
+      "legal": true,
+      "source_odb_sha256": "e91f56c0239c86fec525df2682af01435c375800d9c1734137bf59e069b69cfc",
+      "metrics": {},
+      "receipt": "reports/optimization_v15/quality/ariane136/capacity75-20261014T035440Z-b74360/retention.json",
+      "receipt_sha256": "7641707a5b4318c502d260590fd43f544e533c1bcbb337c51dcb6eb76126bc1b"
+    },
+    {
+      "case": "bp",
+      "label": "capacity75",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "2cfe2ef552ad71040c06a77a85102cbb5a00d9de28826ae8e6245e4f0428f4f8",
+      "metrics": {
+        "case": "bp",
+        "drc": 11032,
+        "drt_wirelength_um": 7879213.05,
+        "evaluator_runtime_seconds": 10369.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 19600,
+        "hbt_count": 4231,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 5880,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -160116,
+        "wns_ns": -22.3637
+      },
+      "receipt": "reports/optimization_v15/quality/bp/capacity75-20261014T023342Z-bd4a50/retention.json",
+      "receipt_sha256": "67de3a58c5c1fcdf0d3be10277334cc692f2be4ff07602ec94bf7be33218df5d"
+    },
+    {
+      "case": "bp_be",
+      "label": "capacity75",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "94dd67708ed85d9f2299e72f0cb9c7ce0d3e16e08abe009426ae49f63b2d33d0",
+      "metrics": {
+        "case": "bp_be",
+        "drc": 4223,
+        "drt_wirelength_um": 2322778.17,
+        "evaluator_runtime_seconds": 3176.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 7254,
+        "hbt_count": 1489,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 2176,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -6857.03,
+        "wns_ns": -4.22722
+      },
+      "receipt": "reports/optimization_v15/quality/bp_be/capacity75-20261014T025639Z-cbaa2f/retention.json",
+      "receipt_sha256": "aa8556cddeeb687c5f097fb5274ae75e2a7792c3a535a13e420ba39a0f45c205"
+    },
+    {
+      "case": "bp_be",
+      "label": "capacity80",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "4593278098416a0dda3de370db547af5181f2d3bd7fe5c5818620c080f7ef330",
+      "metrics": {
+        "case": "bp_be",
+        "drc": 4145,
+        "drt_wirelength_um": 2320429.6,
+        "evaluator_runtime_seconds": 2387.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 7254,
+        "hbt_count": 1489,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 2176,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -6750.83,
+        "wns_ns": -4.02286
+      },
+      "receipt": "reports/optimization_v15/quality/bp_be/capacity80-20261014T042157Z-1edef2/retention.json",
+      "receipt_sha256": "cda1b409df20dc5ef8607f3d0d51a0bcd20daabbdef1e01e43d5ee541da08475"
+    },
+    {
+      "case": "bp_fe",
+      "label": "baseline",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "59eb6af674eea4cf92b316462f2a6d82a8daae383e3f29b8547726364be5da29",
+      "metrics": {
+        "case": "bp_fe",
+        "drc": 1811,
+        "drt_wirelength_um": 1359350.51,
+        "evaluator_runtime_seconds": 1338.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 5766,
+        "hbt_count": 1533,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 1729,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -6544.23,
+        "wns_ns": -3.24734
+      },
+      "receipt": "reports/optimization_v15/quality/bp_fe/baseline-20261014T023339Z-5550b9/retention.json",
+      "receipt_sha256": "dc643c48bc0ca89c586484ae1a9c931375eefb300be2f9b31d3f4c398fb1c960"
+    },
+    {
+      "case": "bp_fe",
+      "label": "capacity75",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "256eb2dd37b871823bde2be5c24e7c20ec78849d65d78524ef0fb32641ffb0f9",
+      "metrics": {
+        "case": "bp_fe",
+        "drc": 1479,
+        "drt_wirelength_um": 1362211.83,
+        "evaluator_runtime_seconds": 1371.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 5766,
+        "hbt_count": 1533,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 1729,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -6564.87,
+        "wns_ns": -3.22119
+      },
+      "receipt": "reports/optimization_v15/quality/bp_fe/capacity75-20261014T035047Z-6fdcaf/retention.json",
+      "receipt_sha256": "e9c584a3e7f4539467fa0d59c5a16a9b6d308df5161efad02bc287ec4918ea5e"
+    },
+    {
+      "case": "bp_fe",
+      "label": "capacity80",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "8ac876f8e28518c261e936c07968a7dca0048519d18b88e7898f71aa2ada0619",
+      "metrics": {
+        "case": "bp_fe",
+        "drc": 1264,
+        "drt_wirelength_um": 1366630.48,
+        "evaluator_runtime_seconds": 1342.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 5766,
+        "hbt_count": 1533,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 1729,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -6569.59,
+        "wns_ns": -3.20018
+      },
+      "receipt": "reports/optimization_v15/quality/bp_fe/capacity80-20261014T023340Z-e52b7e/retention.json",
+      "receipt_sha256": "7ecc5abaef4b69c54cd9ef956558e18f7b45b792656a843b7e9fe06c8fbdbebe"
+    },
+    {
+      "case": "bp_multi",
+      "label": "capacity75",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "795f1a5b5b56f151e373c4f74fa3e272268cab23a31748b3b7e927318f351b16",
+      "metrics": {
+        "case": "bp_multi",
+        "drc": 3772,
+        "drt_wirelength_um": 3893290.49,
+        "evaluator_runtime_seconds": 5510.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 15625,
+        "hbt_count": 3456,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 4687,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -82989.5,
+        "wns_ns": -16.2459
+      },
+      "receipt": "reports/optimization_v15/quality/bp_multi/capacity75-20261014T025704Z-e38437/retention.json",
+      "receipt_sha256": "91cc3c26677673d825fbe131e3703143c0c38f9f3f5ae823d686595f4a74fc3b"
+    },
+    {
+      "case": "bp_quad",
+      "label": "capacity75",
+      "status": "legal_only",
+      "legal": true,
+      "source_odb_sha256": "215b8a4d5ccb124e677b33fb19774168dde54cbc73b8190aafb97eaa7ef8994f",
+      "metrics": {},
+      "receipt": "reports/optimization_v15/quality/bp_quad/capacity75-20261014T040650Z-f0a81e/retention.json",
+      "receipt_sha256": "5cf0adf11dd526fd035539889671c8d1491ea5c57b787cc043702a587c3fb84d"
+    },
+    {
+      "case": "swerv_wrapper",
+      "label": "capacity75",
+      "status": "complete",
+      "legal": true,
+      "source_odb_sha256": "5f8e6e8a367659bd1d66c2d12ac03bade50e489ec04a28973642fadd90863f01",
+      "metrics": {
+        "case": "swerv_wrapper",
+        "drc": 14343,
+        "drt_wirelength_um": 3642411.97,
+        "evaluator_runtime_seconds": 6409.0,
+        "evaluator_schema_version": 2,
+        "guide_source": "submission_odb",
+        "hbt_capacity": 13625,
+        "hbt_count": 1662,
+        "hbt_excess_count": 0,
+        "hbt_free_limit": 4087,
+        "hbt_grid_origin_x_dbu": 11990,
+        "hbt_grid_origin_y_dbu": 11940,
+        "hbt_pitch_dbu": 12800,
+        "hbt_pitch_um": 6.4,
+        "legal": true,
+        "legality_error_count": 0,
+        "tns_ns": -1849.42,
+        "wns_ns": -1.5531
+      },
+      "receipt": "reports/optimization_v15/quality/swerv_wrapper/capacity75-20261014T023341Z-f08dc7/retention.json",
+      "receipt_sha256": "a9fb7a2578a86c1e71161f86a884787d08e86cdbc55863c5078edaea68142c77"
+    }
+  ],
+  "decision": {
+    "status": "candidate_ready",
+    "default_variant": "capacity75",
+    "official_trial_candidate": true,
+    "official_score_gain_verified": false,
+    "target_27_verified": false,
+    "conclusion_zh": "本轮得到一个可供官方复测的 capacity75 候选：五例 DRC 总数从 39079 降到 34849（减少 10.82%），WNS 损失减小 0.38%，TNS 损失增加 0.28%。提交入口采用 M2/M3 削减 75%/65%，保留原 24.02 分提交 ZIP。该候选包含明确的时序取舍，尚不能确认提升官方总分或达到 27 分。",
+    "capacity80_decision": "仅完成 FE/BE；两例合计 TNS/WNS 比官方基线差，不作为全局推荐。",
+    "case_regressions": [
+      "bp TNS",
+      "bp_be TNS/WNS",
+      "bp_fe TNS",
+      "swerv_wrapper TNS/WNS/DRC"
+    ],
+    "baseline_archive": "submission_v14_tree_guard_experimental.zip",
+    "candidate_archive": "submission_v15_capacity75.zip"
+  },
+  "package": {
+    "label": "capacity75",
+    "archive": "submission_v15_capacity75.zip",
+    "sha256": "86ab63bbe70853dd9662c8d84ecd33d084c2f4f0e45f2abac6d453aef2bc976b",
+    "bytes": 323820,
+    "zip_crc_valid": true,
+    "entry_points_executable": true,
+    "execution_sources_match_frozen_measurement": true,
+    "execution_fingerprint": "975475b82ea135c6e62dc67661893a4f00404ce85636a688397a4e74064950dc",
+    "coverage": {
+      "legal_cases": [
+        "ariane133",
+        "ariane136",
+        "bp",
+        "bp_be",
+        "bp_fe",
+        "bp_multi",
+        "bp_quad",
+        "swerv_wrapper"
+      ],
+      "full_quality_cases": [
+        "bp",
+        "bp_be",
+        "bp_fe",
+        "bp_multi",
+        "swerv_wrapper"
+      ],
+      "covers_all_eight_legality": true,
+      "covers_five_official_successes": true,
+      "same_case_aggregate": {
+        "tns_ns": {
+          "official_loss_sum": 257645.57,
+          "candidate_loss_sum": 258376.82,
+          "loss_reduction_percent": -0.2838201332163406
+        },
+        "wns_ns": {
+          "official_loss_sum": 47.79110000000001,
+          "candidate_loss_sum": 47.61111,
+          "loss_reduction_percent": 0.376618240634785
+        },
+        "drc": {
+          "official_loss_sum": 39079,
+          "candidate_loss_sum": 34849,
+          "loss_reduction_percent": 10.824227846157783
+        },
+        "drt_wirelength_um": {
+          "official_loss_sum": 19100978.669999998,
+          "candidate_loss_sum": 19099905.509999998,
+          "loss_reduction_percent": 0.005618350863276207
+        },
+        "hbt_count": {
+          "official_loss_sum": 12371,
+          "candidate_loss_sum": 12371,
+          "loss_reduction_percent": 0.0
+        }
+      }
+    },
+    "new_official_score": null,
+    "target_27_verified": false
+  },
+  "tests": {
+    "production_tests.log": {
+      "passed": 222,
+      "sha256": "d45edcb6d4739b9cb079e3346a7b0e996235db431ff48716844fa06fbe8c2dfb"
+    },
+    "tree_guard_tests.log": {
+      "passed": 4,
+      "sha256": "57908ac68062672e301e8688d0d1d92db7dfb86505c48b6cf3de6495a088c918"
+    },
+    "support_tests.log": {
+      "passed": 7,
+      "sha256": "f3a3378c73e2052372c1865a28f08af23eea2736e86e0d0902bd03a798035cd1"
+    }
+  },
+  "paired_runtime": {
+    "scope": "Shared-host eight-thread paired observations; not server runtime or an official score prediction.",
+    "means": {
+      "bp_fe": {
+        "baseline_source": 16.947479542497604,
+        "capacity75": 17.161597046499082,
+        "candidate_change_percent": 1.263417981798165
+      },
+      "bp": {
+        "baseline_source": 109.30984265300503,
+        "capacity75": 110.43201989450608,
+        "candidate_change_percent": 1.0266021926893742
+      }
+    },
+    "all_source_odb_and_guides_match_quality_inputs": true
+  },
+  "evaluator_identity": {
+    "image_manifest": {
+      "contest_api_version": 1,
+      "baseline_branch": "EDA_contest",
+      "openroad_base_commit": "305d3ba2ddfd00591924cc586ad408179f566afe",
+      "evaluator_version": "20260914",
+      "contains_source": false,
+      "native_build_sha256": "8a75b9d06ccf5069c95455d024e1bd0d6098bc5e36282e9716993e027362662e"
+    },
+    "verified_checksums": {
+      "bin/evaluate": "c4ab636853d57cfb6f9286dccfe4f9783ccae63039a30136488f50c9f93e0fcf",
+      "bin/openroad_eval": "e0dc7385e61e44fd6a7f666bd62a55ada39f84a96fac42e8db1a401736d4adba",
+      "bin/openroad_eval.real": "43b4b9a524ed6004a16259d3802519e9de5190f8ae0195f4345aac2806e940d3"
+    },
+    "final_report_sha256": "b1994322f80e1f69e4e9f9533ab5677d2fa62fc6c51bef97798a38f51339e7a9",
+    "hbt_parasitics_sha256": "6f1b1ae713a179f1ad6d512b2e1388bb818ed7f35f44a5e33613c1bb8e8cac51",
+    "legality_validator_sha256": "300be9445fea8d64225eeaf88a79f9574108b1908b553bf402d30e197938e340"
+  },
+  "host_python": {
+    "version": "3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]",
+    "executable": "/usr/bin/python3",
+    "implementation": "CPython"
+  },
+  "baseline_archive": {
+    "file": "submission_v14_tree_guard_experimental.zip",
+    "sha256": "46dbeb3f1bcc7711ffda373b1d4f6b83ffd385da541a515ab96ecdf822bfd693"
+  }
+}
