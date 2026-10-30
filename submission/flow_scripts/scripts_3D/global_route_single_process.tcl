@@ -175,6 +175,15 @@ proc fused_read_nets {path} {
   close $fp
   return $names
 }
+proc fused_refine_set_origin {inst x y} {
+  set placement_status [$inst getPlacementStatus]
+  $inst setPlacementStatus PLACED
+  try {
+    $inst setOrigin $x $y
+  } finally {
+    $inst setPlacementStatus $placement_status
+  }
+}
 proc fused_route_pass {names min_layer max_layer guide report} {
   # An empty GRT queue means all nets in OpenROAD. Publish an empty pass
   # without calling the router when this die has no routable net.
@@ -220,6 +229,13 @@ proc fused_route_pass {names min_layer max_layer guide report} {
     set pass_min [[$tech findLayer $min_layer] getRoutingLevel]
     set pass_max [[$tech findLayer $max_layer] getRoutingLevel]
   }
+  set interface_count 0
+  set interface_clock_nets [dict create]
+  if {$pass_min == 11 && $pass_max >= 12} {
+    foreach clock_net [::sta::find_all_clk_nets] {
+      dict set interface_clock_nets [$clock_net getName] 1
+    }
+  }
   foreach name $names {
     set net [$::fused_block findNet $name]
     if {$net eq "NULL"} { error "Missing classified net '$name'" }
@@ -259,6 +275,26 @@ proc fused_route_pass {names min_layer max_layer guide report} {
         }
       }
     }
+    # Preserve die bounds and native lower-layer pin access. Only upper
+    # signal nets touching an actual HBT master receive this trunk floor.
+    # Clock networks and package nets retain their original routing window.
+    if {$pass_min == 11 && $net_max_level >= 12 && [$net getSigType] eq "SIGNAL"
+        && ![dict exists $interface_clock_nets $name] && [llength [$net getBTerms]] == 0} {
+      set interface_hbt 0
+      set interface_protected 0
+      foreach iterm [$net getITerms] {
+        set mterm [$iterm getMTerm]
+        if {[$mterm getSigType] in {CLOCK POWER GROUND}} { set interface_protected 1 }
+        if {[[[$iterm getInst] getMaster] getName] in {HBT_BOTIN HBT_TOPIN}} {
+          set interface_hbt 1
+        }
+      }
+      if {$interface_hbt && !$interface_protected} {
+        set net_min_level [expr {max($net_min_level, 12)}]
+        if {!$native_layers} { set net_min [[$tech findRoutingLayer $net_min_level] getName] }
+        incr interface_count
+      }
+    }
     if {$native_layers} {
       ::grt::set_net_routing_layers $net $net_min_level $net_max_level
     } else {
@@ -266,12 +302,51 @@ proc fused_route_pass {names min_layer max_layer guide report} {
     }
     grt::add_net_to_route $net
   }
+  puts "GRT_HBT_INTERFACE12 applied=$interface_count die=$min_layer-$max_layer"
   puts "GRT_LAYER_DISPATCH native=$native_layers die=$min_layer-$max_layer"
   puts "GRT_STAGE enqueue_${min_layer}_${max_layer}_ms=[expr {[clock milliseconds] - $enqueue_started}]"
   puts "GRT_LAYER_HINTS applied=$hint_count die=$min_layer-$max_layer"
   puts "GRT_RESISTANCE_HINTS applied=$resistance_hint_count die=$min_layer-$max_layer"
   puts "Fused process pass: [llength $names] nets on $min_layer-$max_layer"
+  set refine_moves [expr {[info exists ::grt_post_refinement_moves] ? $::grt_post_refinement_moves : {}}]
+  # Route the unchanged MLS selection at its original two-pass HBT positions.
+  # There is no incremental callback yet, so reverting coordinates does not
+  # enqueue nets belonging to the other die.
+  foreach move $refine_moves {
+    lassign $move inst_name old_x old_y new_x new_y
+    set inst [$::fused_block findInst $inst_name]
+    if {$inst eq "NULL"} { error "Missing refinement HBT '$inst_name'" }
+    fused_refine_set_origin $inst $old_x $old_y
+  }
   global_route -guide_file $guide -congestion_report_file $report {*}$::fused_args
+  if {[llength $refine_moves]} {
+    set pass_names [dict create]
+    foreach name $names { dict set pass_names $name 1 }
+    set hidden_nets [dict create]
+    # A moved HBT has terminals on both dies. The native move callback must
+    # see only this pass's nets: the other die has no FastRoute pin models yet.
+    foreach move $refine_moves {
+      set inst [$::fused_block findInst [lindex $move 0]]
+      foreach iterm [$inst getITerms] {
+        set net [$iterm getNet]
+        if {$net ne "NULL" && ![$net isSpecial] && ![dict exists $pass_names [$net getName]]} {
+          dict set hidden_nets [$net getName] $net
+          $net setSpecial
+        }
+      }
+    }
+    try {
+      global_route -start_incremental {*}$::fused_args
+      foreach move $refine_moves {
+        lassign $move inst_name old_x old_y new_x new_y
+        fused_refine_set_origin [$::fused_block findInst $inst_name] $new_x $new_y
+      }
+      global_route -end_incremental -guide_file $guide -congestion_report_file $report {*}$::fused_args
+    } finally {
+      dict for {name net} $hidden_nets { $net clearSpecial }
+    }
+    puts "GRT_POST_REFINEMENT moves=[llength $refine_moves] die=$min_layer-$max_layer"
+  }
 }
 set fused_bottom [fused_read_nets $fused_list_dir/bottom_2d.txt]
 set fused_upper [fused_read_nets $fused_list_dir/upper_2d.txt]

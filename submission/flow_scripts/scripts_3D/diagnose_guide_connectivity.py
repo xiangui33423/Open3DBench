@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import re
 import sys
@@ -70,6 +71,7 @@ def parse_grt_missing(log_path: Path) -> dict[str, set[str]]:
 def parse_guides(
     guide_path: Path,
     split_only: bool = False,
+    keep_layers: frozenset[str] | None = None,
 ) -> dict[str, list[GuideRect]]:
     """Parse route.guide into net -> guide rectangles."""
     nets: dict[str, list[GuideRect]] = defaultdict(list)
@@ -92,15 +94,12 @@ def parse_guides(
             if len(parts) >= 5:
                 layer = parts[-1]
                 if selected and METAL_RE.match(layer) and cur_net:
-                    nets[cur_net].append(
-                        GuideRect(
-                            layer=layer,
-                            x1=int(parts[0]),
-                            y1=int(parts[1]),
-                            x2=int(parts[2]),
-                            y2=int(parts[3]),
-                        )
-                    )
+                    # Validate all selected metal rows in the original order,
+                    # including layers that this internal caller need not keep.
+                    x1, y1 = int(parts[0]), int(parts[1])
+                    x2, y2 = int(parts[2]), int(parts[3])
+                    if keep_layers is None or layer.lower() in keep_layers:
+                        nets[cur_net].append(GuideRect(layer, x1, y1, x2, y2))
                 continue
             if len(parts) == 1:
                 cur_net = parts[0]
@@ -183,22 +182,26 @@ def guide_component_ids(
         if ra != rb:
             parent[rb] = ra
 
-    for i in range(len(rects)):
+    for i, a in enumerate(rects):
         li = layer_ids[i]
         neighbors = index.later_neighbors(i) if index is not None else range(i + 1, len(rects))
         for j in neighbors:
+            b = rects[j]
             lj = layer_ids[j]
-            same_layer = rects[i].layer == rects[j].layer
+            same_layer = a.layer == b.layer
             if same_layer:
-                if xy_touches(rects[i], rects[j]):
+                if not (a.x2 < b.x1 - 1 or b.x2 < a.x1 - 1
+                        or a.y2 < b.y1 - 1 or b.y2 < a.y1 - 1):
                     union(same_parent, i, j)
                     if li is not None:
                         union(three_d_parent, i, j)
             elif li is None or lj is None:
                 continue
-            elif li == lj and xy_touches(rects[i], rects[j]):
+            elif li == lj and not (a.x2 < b.x1 - 1 or b.x2 < a.x1 - 1
+                                   or a.y2 < b.y1 - 1 or b.y2 < a.y1 - 1):
                 union(three_d_parent, i, j)
-            elif abs(li - lj) == 1 and xy_touches(rects[i], rects[j], margin=0):
+            elif abs(li - lj) == 1 and not (a.x2 < b.x1 or b.x2 < a.x1
+                                           or a.y2 < b.y1 or b.y2 < a.y1):
                 union(three_d_parent, i, j)
 
     return ([find(same_parent, i) for i in range(len(rects))],
@@ -433,7 +436,8 @@ def run_diagnosis(
     log_path = resolve_grt_log_path(results_dir)
 
     guides = parse_guides(guide_path, split_only)
-    upper_guides = parse_guides(upper_path, split_only) if upper_path.exists() else {}
+    upper_guides = (parse_guides(upper_path, split_only, frozenset(("metal10",)))
+                    if upper_path.exists() else {})
     if prepared_metadata is not None:
         if not split_only:
             raise ValueError('Prepared routing metadata supports the complete strict split-net check only')
@@ -541,15 +545,22 @@ def main() -> int:
         parser.error('--prepared-metadata-sha256 requires --prepared-metadata')
 
     top_k = 1000000 if args.strict else args.top
-    diags = run_diagnosis(
-        args.results_dir,
-        args.max_cc_rects,
-        top_k,
-        split_only=args.strict,
-        def_path=args.def_file,
-        prepared_metadata=args.prepared_metadata,
-        prepared_metadata_sha256=args.prepared_metadata_sha256,
-    )
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        diags = run_diagnosis(
+            args.results_dir,
+            args.max_cc_rects,
+            top_k,
+            split_only=args.strict,
+            def_path=args.def_file,
+            prepared_metadata=args.prepared_metadata,
+            prepared_metadata_sha256=args.prepared_metadata_sha256,
+        )
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
     shown = diags[: args.top]
     print_report(str(args.results_dir), shown)
 

@@ -1,0 +1,79 @@
+{
+  "verified_unix": 1793341189.4301174,
+  "evidence_verification_status": "passed",
+  "all_cases_passed": false,
+  "successful_cases": 7,
+  "failed_cases": 1,
+  "submission_sha256": "3ff9f3ddc88af939bce22169ecadd08aac5ba88f2b6d01545a577d216b451bed",
+  "source_files_verified": 104,
+  "input_files_verified": 272,
+  "evaluator_files_verified": 204,
+  "suite_comparison_sha256": "be39aad8acd5de11b9bf0b85148fc073d95981354e3c084e9991818f6f9a913a",
+  "cases": [
+    {
+      "case": "ariane133",
+      "status": "complete",
+      "metrics_sha256": "eba9c44add970f516818d4c687500558be95fd04ca076c0ba55f951fd711dcf7",
+      "legality_sha256": "e684b28ff69ba5d4cd3924f083b2449e049035e8520565d666c7cfd1c4eef9d2",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "ariane136",
+      "status": "complete",
+      "metrics_sha256": "aba23617277266d4e254e0b9c22e87808aa89841fe08839182dadcab1697aadb",
+      "legality_sha256": "14a75ae7ef3efea15446ec47c151beebadb29f5a161f41c3d014ec17f5c4b177",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "bp",
+      "status": "complete",
+      "metrics_sha256": "309cc98a7e6a4bca4c6c097535d09ceb3e229411c0282b016193138dc3fde41c",
+      "legality_sha256": "a663202ae8f1ff052cb9819192961c797aeaefce95ba9706ab15dcc6eddf77b0",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "bp_fe",
+      "status": "complete",
+      "metrics_sha256": "354411bd13cc758d8d30b637d4a0612ad6ecfd37f48c69e39f3d9adbe98f26da",
+      "legality_sha256": "5090aca544f3c90804e7bd86f427a22ae274f972b204643f923e4e58b885f00e",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "bp_be",
+      "status": "complete",
+      "metrics_sha256": "8253d4cb01c077972b2b0d4a7689703dc132850e3c072ac959ad7cfbb74c494b",
+      "legality_sha256": "0c3fa50a94205889f351421748413d2e6de1f3d3a03446af15c090fd44b74c0f",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "bp_multi",
+      "status": "complete",
+      "metrics_sha256": "8962ddcc4a39d4da3ae34d5b3de9e572b864267772521810a3a285419996cfe8",
+      "legality_sha256": "0f3bbc2f04c041c58bffca23c63ed51cbb72f83a75ec22fa0c9da1d5b1185865",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "swerv_wrapper",
+      "status": "complete",
+      "metrics_sha256": "aa83b701d6590f48874736eebf59de8c22702693966e3f1abb180ee9f4a2687a",
+      "legality_sha256": "ea01f22b0e5d55ee44a55d15dd12a7fc03894165d1814bccaaa308eaf3d67933",
+      "legal": true,
+      "hbt_excess_count": 0
+    },
+    {
+      "case": "bp_quad",
+      "status": "failed",
+      "failure_stage": "global_route",
+      "exit_code": 1,
+      "error_code": "GRT-0228",
+      "failure_report_sha256": "b858f48715ca8161c1afab2d2ab743f704e20be013b78c394bb011bfa50120dd"
+    }
+  ],
+  "scope_note": "Original local audit; suite_comparison_sha256 references the original report. Portable results.json preserves the metric values and records its source digest."
+}

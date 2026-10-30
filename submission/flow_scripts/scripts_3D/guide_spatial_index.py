@@ -76,6 +76,28 @@ class _RectGrid:
             if not (rect.x2 < x1 or x2 < rect.x1 or rect.y2 < y1 or y2 < rect.y1):
                 yield i
 
+    def later_neighbors(self, i, allowed, bits):
+        """Query a grid rectangle whose integer ordered bounds were checked."""
+        rects = self.rects
+        rect = rects[i]
+        x1, y1 = rect.x1 - 1, rect.y1 - 1
+        x2, y2 = rect.x2 + 1, rect.y2 + 1
+        xlo, xhi = x1 // _GRID_CELL_SIZE, x2 // _GRID_CELL_SIZE
+        ylo, yhi = y1 // _GRID_CELL_SIZE, y2 // _GRID_CELL_SIZE
+        if (xhi - xlo + 1) * (yhi - ylo + 1) > max(512, len(rects) * 8):
+            return sorted(self.intersections(x1, y1, x2, y2, allowed, i))
+        candidates = set()
+        for x in range(xlo, xhi + 1):
+            for y in range(ylo, yhi + 1):
+                for bit in bits:
+                    for j in self._cells.get((x, y, bit), ()):
+                        if j > i:
+                            candidates.add(j)
+        # Keep both exact box filtering and the original union traversal order.
+        return sorted(j for j in candidates
+                      if not (rects[j].x2 < x1 or x2 < rects[j].x1
+                              or rects[j].y2 < y1 or y2 < rects[j].y1))
+
 
 class _RectIndex:
     """Static bounding-box hierarchy over original rectangle indices.
@@ -153,11 +175,16 @@ class GuideSpatialIndex:
                 self._bits[key] = 1 << len(self._bits)
         self._layer_bits = [self._bits[key] for key in self._keys]
         self._neighbor_bits = {}
+        self._neighbor_bit_values = {}
         for key, bit in self._bits.items():
+            values = (bit,)
             if key[0] == "metal":
-                bit |= (self._bits.get(("metal", key[1] - 1), 0)
-                        | self._bits.get(("metal", key[1] + 1), 0))
+                below = self._bits.get(("metal", key[1] - 1), 0)
+                above = self._bits.get(("metal", key[1] + 1), 0)
+                bit |= below | above
+                values += tuple(value for value in (below, above) if value)
             self._neighbor_bits[key] = bit
+            self._neighbor_bit_values[key] = values
 
     def _ensure_all(self):
         if self._all is None:
@@ -184,6 +211,9 @@ class GuideSpatialIndex:
         self._ensure_all()
         rect = self.rects[i]
         allowed = self._neighbor_bits[self._keys[i]]
+        if isinstance(self._all, _RectGrid):
+            return self._all.later_neighbors(
+                i, allowed, self._neighbor_bit_values[self._keys[i]])
         # Preserve the old nested-loop union order and component root IDs.
         return sorted(self._all.intersections(
             rect.x1 - 1, rect.y1 - 1, rect.x2 + 1, rect.y2 + 1, allowed, i))

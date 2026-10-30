@@ -111,7 +111,11 @@ class OfficialPlatformAuditTest(unittest.TestCase):
         def mutate(path):
             result = original(path)
             if path.name == 'rc.rules':
+                before = path.stat()
                 path.write_text('mutated after reading')
+                # Equal-size writes can share one filesystem timestamp tick.
+                # Make this fixture's metadata change deterministic.
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
             return result
         with patch.object(verifier, 'digest', side_effect=mutate):
             with self.assertRaisesRegex(ValueError, 'changed while'):

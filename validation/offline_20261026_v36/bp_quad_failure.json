@@ -1,0 +1,40 @@
+{
+  "case": "bp_quad",
+  "status": "failed",
+  "stage": "global_route",
+  "exit_code": 1,
+  "route_seconds_including_builtin_retry": 632.259128679987,
+  "threads": 32,
+  "submission_sha256": "3ff9f3ddc88af939bce22169ecadd08aac5ba88f2b6d01545a577d216b451bed",
+  "attempts": [
+    {
+      "policy": "requested",
+      "log": "evidence/bp_quad/grt_failed_policy.txt",
+      "log_sha256": "a16cf5c945ccfdaf3a8f00c574c4a2ae081fce3c7d5199d0cd4b6975b6ec22fe",
+      "error": "[ERROR GRT-0228] Horizontal edge usage exceeds the maximum allowed. (634, 242) usage=65535 limit=3400"
+    },
+    {
+      "policy": "fallback",
+      "log": "evidence/bp_quad/global_route.txt",
+      "log_sha256": "c522ec8ee8a0bef41d1c8e56e10546211d8cbb399f380671171cb5501208fa82",
+      "error": "[ERROR GRT-0228] Horizontal edge usage exceeds the maximum allowed. (634, 242) usage=65535 limit=3400"
+    }
+  ],
+  "error_code": "GRT-0228",
+  "grid_x": 634,
+  "grid_y": 242,
+  "observed_edge_usage": 65535,
+  "allowed_edge_usage": 3400,
+  "evaluation_started": false,
+  "legal_status": "not_evaluated",
+  "quality_metrics_available": false,
+  "failure_is_hbt_limit": false,
+  "inference": "The value 65535 is the maximum uint16_t value; edge usage is stored as uint16_t and supports negative updates. A counter underflow/wraparound is a plausible cause, but the originating update has not been traced.",
+  "source_references": [
+    "submission/openroad_overlay/src/grt/src/fastroute/include/DataType.h:142",
+    "submission/openroad_overlay/src/grt/src/fastroute/src/graph2d.cpp:381",
+    "submission/openroad_overlay/src/grt/src/fastroute/src/utility.cpp:1904",
+    "submission/src/run_router.py:121"
+  ],
+  "scope_note": "The exact tested release and evaluator were not changed. A failed case has no TNS/WNS/DRC/wirelength result and must not be treated as zero or omitted from suite coverage."
+}

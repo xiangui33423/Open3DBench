@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 
 DEFAULT_CONFIG = {
     "enabled": True,
+    "preserve_incident_hpwl": False,
     "passes": 2,
     "search_radius": 2,
     "max_moves": 4096,
@@ -31,6 +32,8 @@ def _config(overrides):
         if unknown:
             raise ValueError(f"Unknown HBT optimization keys: {sorted(unknown)}")
         values.update(overrides)
+    if not isinstance(values["preserve_incident_hpwl"], bool):
+        raise ValueError("preserve_incident_hpwl must be a JSON boolean")
     if not isinstance(values["enabled"], bool):
         raise ValueError("enabled must be a JSON boolean")
     for key in ("passes", "search_radius", "max_moves"):
@@ -177,9 +180,11 @@ def optimize_hbts(manifest, config=None):
     result["hbts"] = hbts
     hbt_names = {hbt["name"] for hbt in hbts}
     nets = list(manifest.get("nets", []))
+    hbt_net_indices = []
     for index, net in enumerate(nets):
         if any(pin["inst"] in hbt_names for pin in net["pins"]):
             nets[index] = dict(net, pins=[dict(pin) for pin in net["pins"]])
+            hbt_net_indices.append(index)
     result["nets"] = nets
     stats = {"enabled": values["enabled"], "existing_hbts": len(hbts),
              "eligible_hbts": 0, "moved_hbts": 0, "accepted_moves": 0,
@@ -197,7 +202,9 @@ def optimize_hbts(manifest, config=None):
     before = {h["name"]: (h["x"], h["y"]) for h in hbts}
     incident = defaultdict(set)
     pin_refs = defaultdict(list)
-    for index, net in enumerate(nets):
+    # The copy pass already proved every other net contains no existing HBT.
+    for index in hbt_net_indices:
+        net = nets[index]
         for pin in net["pins"]:
             name = pin["inst"]
             if name in by_name:
@@ -284,7 +291,7 @@ def optimize_hbts(manifest, config=None):
             # improve HPWL; current also wins every equal-cost relocation tie.
             # Keep the full search for path guards (their rejection statistics
             # are observable) and noninteger geometry (rounding can differ).
-            if not guarded_paths.get(name):
+            if not guarded_paths.get(name) or values["preserve_incident_hpwl"]:
                 if (xl <= current[0] <= xh and yl <= current[1] <= yh
                         and isinstance(current[0], int) and isinstance(current[1], int)
                         and all(offsets == (0, 0, 0, 0) for _box, offsets in groups)
@@ -300,6 +307,12 @@ def optimize_hbts(manifest, config=None):
                                             + max(box[3] - box[1], offsets[3] - offsets[1])
                                             for box, offsets in groups)):
                     continue
+            def incident_costs(point):
+                return [max(box[2], point[0] + off[2]) - min(box[0], point[0] + off[0])
+                        + max(box[3], point[1] + off[3]) - min(box[1], point[1] + off[1])
+                        for box, off in groups]
+
+            incident_limits = incident_costs(current) if values["preserve_incident_hpwl"] else None
             best_point, best_cost = current, old_cost
             for point in lattice.candidates(current, (xl, yl, xh, yh), values["search_radius"]):
                 if point in lattice.occupied and lattice.occupied[point] != name:
@@ -307,6 +320,9 @@ def optimize_hbts(manifest, config=None):
                 if any(_path_length(path, point) > limit
                        for path, limit in guarded_paths.get(name, ())):
                     stats["path_guard"]["rejected_candidates"] += 1
+                    continue
+                if incident_limits is not None and any(
+                        cost > limit for cost, limit in zip(incident_costs(point), incident_limits)):
                     continue
                 candidate_cost = objective(point)
                 # Prefer the shortest relocation, then stable x/y ordering.

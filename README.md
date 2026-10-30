@@ -6,6 +6,68 @@ This repository provides the public code, benchmark interface, and baseline for 
 
 English title: **Timing-Driven 3D Global Routing with Hybrid Bonding Co-Optimization for Face-to-Face-Bonded 3D-IC**
 
+## Latest measured release: v36 (2026-10-30)
+
+The canonical tested source is now [`submission/`](submission/). Its 104 files
+match the v36 submission archive with SHA-256
+`3ff9f3ddc88af939bce22169ecadd08aac5ba88f2b6d01545a577d216b451bed`.
+This release enforces the two-HBT MLS limit, loads the complete official
+collateral, and adds a guarded upper-die trunk for eligible long control nets.
+`OpenROAD-GRT/` and the versioned sections below retain earlier development history.
+
+The **Open3DBench-offline-20261026** evaluation finished with **7 successful
+evaluations and 1 routing failure**. Seven cases ran in this batch; `bp_be`
+reuses a complete same-release evaluation after source, image and evidence
+hash verification. The successful cases all pass legality and have zero HBT
+excess; their DRC counts are nonzero.
+
+Across the **seven successful cases only**, the equal-case mean reductions
+against the published official baseline are **16.96% TNS magnitude, 9.74% WNS
+magnitude, 58.88% DRC and 1.35% routed wirelength**. These conditional means
+exclude `bp_quad` and do not represent an eight-case improvement or contest score.
+`bp_multi` TNS, `ariane133`/`swerv_wrapper` WNS, and `bp` wirelength regress slightly.
+
+`bp_quad` fails both the requested and fallback routing policies with
+`GRT-0228` at `(634, 242)`: edge usage `65535`, limit `3400`. It does not reach
+legality, detailed routing or STA. The counter-wraparound explanation is a
+hypothesis, not a verified root cause; this release does not fix that failure.
+
+Results: [per-case CSV](validation/offline_20261026_v36/suite_comparison.csv),
+[portable metrics and scope](validation/offline_20261026_v36/results.json),
+[comparison plot](validation/offline_20261026_v36/suite_improvements.png),
+[failure evidence](validation/offline_20261026_v36/bp_quad_failure.json).
+The README and validation documents inside `submission/` remain the exact
+October 29 release snapshot; this section and the linked October 30 results
+provide the later eight-case coverage.
+
+Verify the snapshot and package its frozen source:
+
+```bash
+python3 validation/offline_20261026_v36/verify_snapshot.py
+python3 submission/package.py --output submission_v36_timing.zip
+```
+
+Repackaging preserves source contents; filesystem timestamps can change ZIP bytes.
+To reproduce a case, run inside the supplied offline image with evaluator revision
+`20261025-mls-map` (image ID
+`sha256:e8dc6ec686258ba8c86bd312618cfcbcb8311959f3f9a9d5d398b16b907a073b`):
+
+```bash
+BENCH_INPUT=/path/to/open3dbench_8cases_post_hbt_input_20260724
+BENCH_OUTPUT=/tmp/open3dbench-v36
+BENCH_CASE=bp_be
+bash submission/build.sh 32
+bash submission/run.sh "$BENCH_INPUT/cases/$BENCH_CASE/grt_input" \
+  "$BENCH_OUTPUT/$BENCH_CASE" "$BENCH_INPUT/platforms/nangate45_3D" 32
+CONTEST_EVAL_THREADS=32 contest evaluate "$BENCH_CASE" "$BENCH_INPUT" \
+  "$BENCH_OUTPUT/$BENCH_CASE" "$BENCH_OUTPUT/quality/$BENCH_CASE"
+```
+
+The measured run used the unmodified OCI filesystem through rootless bubblewrap
+and a hash-verified cached native build; the commands above use the supplied image
+to rebuild from source. The large input bundle, native build and generated routing
+databases remain outside Git. Runtime speedups and a new official score are unverified.
+
 ## 1. Contest Description
 
 Participants are required to jointly optimize metal layer sharing net selection and subnet assignment, incremental HBT placement, and timing-driven 3D global routing. The submitted algorithm must produce a routed OpenDB database containing the final global-routing guides, HBT placement, and net/subnet connectivity.
@@ -62,9 +124,9 @@ Replace `bp_fe` and `baseline` to run another case or keep multiple experiment
 outputs. GRT results are stored under `output/`, and evaluation reports are
 stored under `reports/`.
 
-### Version 16 timing candidate — fixed two-group branches
+### Historical version 16 timing candidate — fixed two-group branches
 
-The current submission prioritizes WNS/TNS. Across the same five successful
+The v16 submission prioritized WNS/TNS. Across the same five successful
 official cases, TNS loss decreases **4.40%**, the sum of WNS losses decreases
 **3.53%**, and DRC decreases **11.05%** versus the actual 24.02-point results.
 FE WNS and multi TNS regress; see the [per-case comparison](docs/optimization_v16.md).

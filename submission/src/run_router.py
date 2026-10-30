@@ -52,30 +52,36 @@ def file_sha256(path: Path) -> str:
 
 
 def select_collateral(def_path: Path, platform: Path) -> tuple[list[Path], list[Path]]:
-    """Load exact normal-size masters used by this DEF, avoiding shrink copies."""
-    masters = component_masters(def_path)
-    lef_files = [platform / 'lef/NangateOpenCellLibrary.tech.lef']
-    cell_lefs = sorted((platform / 'lef_bottom').glob('*.lef')) + sorted((platform / 'lef_upper').glob('*.lef'))
-    covered: set[str] = set()
-    for lef in cell_lefs:
-        names = set(re.findall(r'^\s*MACRO\s+(\S+)', lef.read_text(), re.M))
-        if names & masters:
-            lef_files.append(lef)
-            covered.update(names)
-    if masters - covered:
-        raise ValueError(f'Platform LEFs lack masters: {sorted(masters - covered)[:20]}')
-    lib_files: list[Path] = []
-    for lib in sorted((platform / 'lib_bottom').glob('*.lib')) + sorted((platform / 'lib_upper').glob('*.lib')):
-        if ' copy.' in lib.name:
-            continue
-        names = set(re.findall(r'\bcell\s*\(\s*"?([^\s)\"]+)"?\s*\)', lib.read_text()))
-        if names & masters:
-            lib_files.append(lib)
-    for path in lef_files + lib_files:
+    """Preserve the full official library set, including uninstantiated macros."""
+    design_config = def_path.parent.parent / 'flow_design/config.mk'
+    if not design_config.is_file():
+        raise FileNotFoundError(f'Missing official design configuration: {design_config}')
+    result = subprocess.run(
+        ['make', '--no-print-directory', '-s', '-f',
+         str(Path(__file__).with_name('collateral.mk')),
+         f'DESIGN_CONFIG={design_config}', f'PLATFORM_DIR={platform}', 'collateral'],
+        cwd=platform, check=True, capture_output=True, text=True)
+    selected = {'LEF': [], 'LIB': []}
+    for line in result.stdout.splitlines():
+        kind, separator, name = line.partition('\t')
+        if not separator or kind not in selected:
+            raise ValueError(f'Invalid official collateral record: {line!r}')
+        path = Path(name)
+        if not path.is_absolute():
+            path = platform / path
         if not path.is_file():
             raise FileNotFoundError(path)
-    if not lib_files:
-        raise ValueError('No matching Liberty files in platform')
+        selected[kind].append(path)
+    lef_files, lib_files = selected['LEF'], selected['LIB']
+    if not lef_files or not lib_files:
+        raise ValueError('Official configuration must specify LEF and Liberty files')
+    masters = component_masters(def_path)
+    covered: set[str] = set()
+    for lef in lef_files:
+        names = set(re.findall(r'^\s*MACRO\s+(\S+)', lef.read_text(), re.M))
+        covered.update(names)
+    if masters - covered:
+        raise ValueError(f'Platform LEFs lack masters: {sorted(masters - covered)[:20]}')
     return lef_files, lib_files
 
 

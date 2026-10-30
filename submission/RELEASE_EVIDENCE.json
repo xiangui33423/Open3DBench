@@ -1,0 +1,96 @@
+{
+  "version": "v36_timing",
+  "variant": "single_trunk",
+  "case": "bp_be",
+  "official_submission_uploaded": false,
+  "baseline_platform_score_user_reported": 27.32,
+  "full_fresh_evaluation": true,
+  "metrics": {
+    "case": "bp_be",
+    "drc": 4280,
+    "drt_wirelength_um": 2311221.54,
+    "evaluator_runtime_seconds": 2043.0,
+    "evaluator_schema_version": 2,
+    "guide_source": "submission_odb",
+    "hbt_capacity": 7254,
+    "hbt_count": 1489,
+    "hbt_excess_count": 0,
+    "hbt_free_limit": 2176,
+    "hbt_grid_origin_x_dbu": 11990,
+    "hbt_grid_origin_y_dbu": 11940,
+    "hbt_pitch_dbu": 12800,
+    "hbt_pitch_um": 6.4,
+    "legal": true,
+    "legality_error_count": 0,
+    "max_hbts_per_logical_net": 2,
+    "mls_2d_nets": 192,
+    "original_2d_nets": 58155,
+    "original_3d_nets": 1105,
+    "required_hbts_per_3d_net": 1,
+    "required_hbts_per_mls_2d_net": 2,
+    "tns_ns": -5919.77,
+    "wns_ns": -3.55756
+  },
+  "baseline_metrics": {
+    "case": "bp_be",
+    "drc": 3934,
+    "drt_wirelength_um": 2304859.29,
+    "evaluator_runtime_seconds": 1671.0,
+    "evaluator_schema_version": 2,
+    "guide_source": "submission_odb",
+    "hbt_capacity": 7254,
+    "hbt_count": 1489,
+    "hbt_excess_count": 0,
+    "hbt_free_limit": 2176,
+    "hbt_grid_origin_x_dbu": 11990,
+    "hbt_grid_origin_y_dbu": 11940,
+    "hbt_pitch_dbu": 12800,
+    "hbt_pitch_um": 6.4,
+    "legal": true,
+    "legality_error_count": 0,
+    "max_hbts_per_logical_net": 2,
+    "mls_2d_nets": 192,
+    "original_2d_nets": 58155,
+    "original_3d_nets": 1105,
+    "required_hbts_per_3d_net": 1,
+    "required_hbts_per_mls_2d_net": 2,
+    "tns_ns": -6659.82,
+    "wns_ns": -4.2267
+  },
+  "image_config_digest": "e8dc6ec686258ba8c86bd312618cfcbcb8311959f3f9a9d5d398b16b907a073b",
+  "image_revision": "20261025-mls-map",
+  "threads_per_evaluation": 32,
+  "runtime": "Unmodified offline OCI filesystem, rootless bubblewrap",
+  "tests": {
+    "count": 44,
+    "passed": true
+  },
+  "grt_binary": {
+    "reason": "Python/config-only fix; complete C++ overlay and build scripts match the recorded fresh build",
+    "verified_build_proof": "reports/optimization_v13/native_build/build_proof.json",
+    "binary_sha256": "cab98f6cb51b7e9ea1bd7b2c37141963bd95573a4d17fbfec3881bbad81d21f1",
+    "overlay_files_verified": 13
+  },
+  "new_native_build_required": false,
+  "evaluation_seconds": 2070.6050437488593,
+  "timing_loss_reduction_percent": {
+    "tns_ns": 11.112162190569707,
+    "wns_ns": 15.831263160385166
+  },
+  "drc_change_percent": 8.795119471276047,
+  "runtime_comparison_note": "Candidates were evaluated concurrently; evaluator time is not an isolated router runtime comparison",
+  "source_changes": [
+    "flow_scripts/scripts_3D/mls_config.json",
+    "flow_scripts/scripts_3D/mls_planner.py"
+  ],
+  "output_sha256": {
+    "5_1_grt.odb": "8d33b4ad06343d6d7ba5ba663e0b9291c3c407a314818382f76452f4a9c6914f",
+    "route.guide": "5704724884f6d7efe4a7d2aa25540973611b49953420b04cef708d49763b6b63",
+    "mls_plan.json": "17af846e584799254cdf4f0af0475c2db99cb3d6e0aad7258b2e92065b68e7ad"
+  },
+  "evidence_sha256": {
+    "metrics.json": "8253d4cb01c077972b2b0d4a7689703dc132850e3c072ac959ad7cfbb74c494b",
+    "legality.json": "0c3fa50a94205889f351421748413d2e6de1f3d3a03446af15c090fd44b74c0f"
+  },
+  "scope": "Fresh full evaluation of bp_be only; no new official platform score"
+}

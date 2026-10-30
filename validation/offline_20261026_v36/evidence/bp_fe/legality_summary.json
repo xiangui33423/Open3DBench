@@ -1,0 +1,22 @@
+{
+  "legal": true,
+  "errors": [],
+  "metrics": {
+    "hbt_capacity": 5766,
+    "hbt_count": 1533,
+    "hbt_excess_count": 0,
+    "hbt_free_limit": 1729,
+    "hbt_grid_origin_x_dbu": 11990,
+    "hbt_grid_origin_y_dbu": 11940,
+    "hbt_pitch_dbu": 12800,
+    "hbt_pitch_um": 6.4,
+    "max_hbts_per_logical_net": 2,
+    "mls_2d_nets": 192,
+    "original_2d_nets": 34950,
+    "original_3d_nets": 1149,
+    "required_hbts_per_3d_net": 1,
+    "required_hbts_per_mls_2d_net": 2
+  },
+  "original_legality_sha256": "5090aca544f3c90804e7bd86f427a22ae274f972b204643f923e4e58b885f00e",
+  "scope_note": "Original per-net mapping omitted; legality status, errors and HBT metrics retained."
+}

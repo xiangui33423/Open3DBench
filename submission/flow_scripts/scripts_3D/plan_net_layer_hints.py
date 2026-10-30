@@ -85,15 +85,28 @@ def plan_layer_hints(manifest, config=None, excluded_originals=()):
         # Some DEFs leave a clock leaf net's USE as SIGNAL. The Tcl caller
         # additionally checks MTerm SigType; these exact conventional names
         # provide a conservative guard using the geometry manifest alone.
-        if any(p.get("pin") in {"CK", "CLK", "CLKN", "CKN", "clk"} for p in pins):
+        clock_pin = False
+        pin_dies = []
+        output_count = 0
+        invalid_direction = False
+        for pin in pins:
+            if pin.get("pin") in {"CK", "CLK", "CLKN", "CKN", "clk"}:
+                clock_pin = True
+                break
+            pin_dies.append(pin.get("die"))
+            direction = pin.get("io")
+            output_count += direction == "OUTPUT"
+            invalid_direction |= direction not in ("INPUT", "OUTPUT")
+        if clock_pin:
             skipped["clock_pin"] += 1
             continue
-        dies = {p.get("die") for p in pins}
+        # Defer hashing die values until the clock guard finishes, retaining
+        # the original rejection order even for malformed JSON pin fields.
+        dies = set(pin_dies)
         if len(dies) != 1 or not dies <= {"bottom", "upper"}:
             skipped["nonlocal_die"] += 1
             continue
-        if (sum(p.get("io") == "OUTPUT" for p in pins) != 1
-                or any(p.get("io") not in ("INPUT", "OUTPUT") for p in pins)):
+        if output_count != 1 or invalid_direction:
             skipped["ambiguous_direction"] += 1
             continue
         fanout = len(pins) - 1
@@ -107,6 +120,17 @@ def plan_layer_hints(manifest, config=None, excluded_originals=()):
             continue
         die = next(iter(dies))
         minimum, maximum = (4, 10) if die == "bottom" else (11, 17)
+        # Limit lower-layer access to short trunks whose driver is near the
+        # sink centroid. This geometry proxy aims to avoid a long common stem
+        # carrying the entire sink load; it is not an STA delay estimate.
+        if die == "bottom" and hpwl <= 1000.0:
+            driver = next(p for p in pins if p["io"] == "OUTPUT")
+            sinks = [p for p in pins if p["io"] == "INPUT"]
+            center_distance = sum(abs(driver[axis] - sum(p[axis] for p in sinks) / fanout)
+                                  for axis in ("x", "y")) / dbu
+            # Allow one 6.4 um public-platform HBT grid pitch of margin.
+            if center_distance <= 0.20 * hpwl + 6.4:
+                minimum = 3
         candidates.append({"net": name, "die": die, "fanout": fanout,
                            "hpwl_um": hpwl, "priority": fanout * hpwl,
                            "min_layer": minimum, "max_layer": maximum})

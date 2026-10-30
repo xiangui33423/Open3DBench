@@ -1,0 +1,64 @@
+{
+  "version": "v35_hbt_limit",
+  "case": "bp_be",
+  "official_submission_uploaded": false,
+  "full_fresh_evaluation": true,
+  "evaluation_exit_code": 0,
+  "image_revision": "20261025-mls-map",
+  "image_config_digest": "e8dc6ec686258ba8c86bd312618cfcbcb8311959f3f9a9d5d398b16b907a073b",
+  "runtime": "Original offline OCI filesystem, executed with rootless bubblewrap",
+  "threads": 32,
+  "metrics": {
+    "case": "bp_be",
+    "drc": 3934,
+    "drt_wirelength_um": 2304859.29,
+    "evaluator_runtime_seconds": 1671.0,
+    "evaluator_schema_version": 2,
+    "guide_source": "submission_odb",
+    "hbt_capacity": 7254,
+    "hbt_count": 1489,
+    "hbt_excess_count": 0,
+    "hbt_free_limit": 2176,
+    "hbt_grid_origin_x_dbu": 11990,
+    "hbt_grid_origin_y_dbu": 11940,
+    "hbt_pitch_dbu": 12800,
+    "hbt_pitch_um": 6.4,
+    "legal": true,
+    "legality_error_count": 0,
+    "max_hbts_per_logical_net": 2,
+    "mls_2d_nets": 192,
+    "original_2d_nets": 58155,
+    "original_3d_nets": 1105,
+    "required_hbts_per_3d_net": 1,
+    "required_hbts_per_mls_2d_net": 2,
+    "tns_ns": -6659.82,
+    "wns_ns": -4.2267
+  },
+  "legal": true,
+  "mls_family_count": 192,
+  "hbt_counts_per_mls_family": {
+    "2": 192
+  },
+  "tests": {
+    "count": 38,
+    "passed": true,
+    "python": "3.12.3"
+  },
+  "grt_binary": {
+    "reason": "Python/config-only fix; complete C++ overlay and build scripts match the recorded fresh build",
+    "verified_build_proof": "reports/optimization_v13/native_build/build_proof.json",
+    "binary_sha256": "cab98f6cb51b7e9ea1bd7b2c37141963bd95573a4d17fbfec3881bbad81d21f1",
+    "overlay_files_verified": 13
+  },
+  "output_sha256": {
+    "5_1_grt.odb": "12ba009aa86166d574dea9d8e307b17affa9d46828bb2826ff0b2d43396672a4",
+    "route.guide": "5e2a58940fa0da3ea9e20e523d687a8418afa0cda5270ed41ec9bfdb7cbb1e41",
+    "mls_plan.json": "8b9ddd923ad555105551014113c71ea42a7af715f7c834c4aee82ae8bb263c9e"
+  },
+  "evidence_sha256": {
+    "legality.json": "352a72e3e098561ef002d2a954ad2af7149df84982c1f29ed772595df80d4ea2",
+    "metrics.json": "bb4cf470a7432f7ae436d7f8402803e18958c6c10888f876a79ffbeb9e50ef38"
+  },
+  "prior_failed_attempt": "HBT-only fix passed topology but failed CELL_LIBRARIES_CHANGED; preserved in attempt1_hbt_only",
+  "validation_scope": "Only bp_be received fresh full evaluation; other cases have no new full result"
+}

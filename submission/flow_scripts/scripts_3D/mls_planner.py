@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
+import heapq
 import re
 from collections import Counter, defaultdict, OrderedDict
 from pathlib import Path
@@ -21,6 +23,7 @@ from statistics import median_low
 DEFAULT_CONFIG = {
     "enabled": True,
     "multi_branch_enabled": False,
+    "single_trunk_enabled": False,
     "multi_branch_adaptive_groups": False,
     "multi_branch_tree_guard": False,
     "multi_branch_sink_guard": True,
@@ -50,6 +53,7 @@ DEFAULT_CONFIG = {
     "joint_site_placement": True,
     "relocation_enabled": True,
     "relocation_passes": 2,
+    "post_refine_passes": 0,
     "relocation_radius": 2,
     "relocation_max_moves": 65536,
     "relocation_min_improvement_um": 0.1,
@@ -108,9 +112,12 @@ def config_values(overrides=None):
         if unknown:
             raise ValueError(f"Unknown MLS configuration keys: {sorted(unknown)}")
         values.update(overrides)
-    for key in ("enabled", "dynamic_demand", "joint_site_placement", "relocation_enabled", "multi_branch_enabled", "multi_branch_sink_guard", "multi_branch_adaptive_groups", "multi_branch_tree_guard"):
+    for key in ("enabled", "dynamic_demand", "joint_site_placement", "relocation_enabled", "multi_branch_enabled", "single_trunk_enabled", "multi_branch_sink_guard", "multi_branch_adaptive_groups", "multi_branch_tree_guard"):
         if not isinstance(values[key], bool):
             raise ValueError(f"{key} must be a JSON boolean")
+    if values["multi_branch_enabled"]:
+        raise ValueError("Multi-branch MLS is incompatible with the contest limit: "
+                         "each original 2D MLS net must use exactly two HBTs")
     if values["multi_branch_tree_guard"] and (
             not values["multi_branch_adaptive_groups"] or not values["multi_branch_sink_guard"]
             or values["multi_branch_max_groups"] != 8):
@@ -124,7 +131,7 @@ def config_values(overrides=None):
     if not 0 <= values["capacity_fraction"] <= 0.30:
         raise ValueError("capacity_fraction must be in [0, 0.30]")
     for key in ("max_new_hbts", "max_shared_nets", "search_radius",
-                "relocation_passes", "relocation_radius", "relocation_max_moves"):
+                "relocation_passes", "relocation_radius", "relocation_max_moves", "post_refine_passes"):
         if not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 0:
             raise ValueError(f"{key} must be a nonnegative integer")
     for key in ("grid_bins", "max_fanout"):
@@ -297,17 +304,31 @@ class HbtSites:
             return []
         ix = max(0, min(self.nx - 1, round((target[0] - self.x0) / self.step)))
         iy = max(0, min(self.ny - 1, round((target[1] - self.y0) / self.step)))
-        candidates = []
-        for gx in range(max(0, ix - radius), min(self.nx, ix + radius + 1)):
-            for gy in range(max(0, iy - radius), min(self.ny, iy + radius + 1)):
-                point = (self.x0 + gx * self.step, self.y0 + gy * self.step)
-                candidates.append((distance(point, target), gx, gy, point))
+        # Merge sorted y rows lazily. The heap key exactly matches the
+        # exhaustive (Manhattan distance, grid x, grid y) traversal order.
+        xs = [(abs(self.x0 + gx * self.step - target[0]), gx,
+               self.x0 + gx * self.step)
+              for gx in range(max(0, ix - radius), min(self.nx, ix + radius + 1))]
+        ys = sorted((abs(self.y0 + gy * self.step - target[1]), gy,
+                     self.y0 + gy * self.step)
+                    for gy in range(max(0, iy - radius), min(self.ny, iy + radius + 1)))
+        if not ys:
+            return []
+        dy, gy, y = ys[0]
+        heap = [(dx + dy, gx, gy, 0, dx, x, y) for dx, gx, x in xs]
+        heapq.heapify(heap)
         available = []
-        for _, _, _, point in sorted(candidates):
+        while heap:
+            _, gx, gy, yi, dx, x, y = heapq.heappop(heap)
+            point = (x, y)
             if self.legal(point, extra):
                 available.append(point)
                 if len(available) >= limit:
                     break
+            yi += 1
+            if yi < len(ys):
+                dy, gy, y = ys[yi]
+                heapq.heappush(heap, (dx + dy, gx, gy, yi, dx, x, y))
         return available
 
     def nearest(self, target, radius, extra=()):
@@ -360,19 +381,50 @@ def candidate(net, config, dbu, demand):
         return None, "type_or_fanout"
     if net["name"].endswith(("_BOT", "_TOP")):
         return None, "existing_subnet"
-    if any(p.get("hbt") or p["inst"].startswith(("HBT_", "LS_HBT_"))
-           or p["inst"] == "PIN" for p in pins):
-        return None, "hbt_or_package_pin"
-    dies = {p.get("die") for p in pins}
+    # Fuse read-only JSON pin scans while deferring geometry/die errors until
+    # their original guard stage. Protected/HBT rejection still has priority.
+    dies, drivers = set(), []
+    die_error = geometry_error = False
+    bad_direction = False
+    first = True
+    for pin in pins:
+        if (pin.get("hbt") or pin["inst"].startswith(("HBT_", "LS_HBT_"))
+                or pin["inst"] == "PIN"):
+            return None, "hbt_or_package_pin"
+        if not die_error:
+            try:
+                dies.add(pin.get("die"))
+            except Exception:
+                die_error = True
+        direction = pin.get("io")
+        if direction == "OUTPUT":
+            drivers.append(pin)
+        if direction not in ("INPUT", "OUTPUT"):
+            bad_direction = True
+        if not geometry_error:
+            try:
+                x, y = pin["x"], pin["y"]
+                if first:
+                    xl = xh = x
+                    yl = yh = y
+                    first = False
+                else:
+                    if x < xl: xl = x
+                    if x > xh: xh = x
+                    if y < yl: yl = y
+                    if y > yh: yh = y
+            except Exception:
+                geometry_error = True
+    if die_error:
+        dies = {pin.get("die") for pin in pins}
     if len(dies) != 1 or next(iter(dies)) not in ("bottom", "upper"):
         return None, "die"
-    drivers = [p for p in pins if p.get("io") == "OUTPUT"]
-    if len(drivers) != 1 or any(p.get("io") not in ("INPUT", "OUTPUT") for p in pins):
+    if len(drivers) != 1 or bad_direction:
         return None, "driver"
     slack = net.get("slack_ns")
     if slack is not None and (not math.isfinite(slack) or slack < config["min_slack_ns"]):
         return None, "timing_guard"
-    span = hpwl(pins)
+    span = hpwl(pins) if geometry_error else xh - xl + yh - yl
     if span < config["min_span_um"] * dbu:
         return None, "short"
     die = next(iter(dies))
@@ -787,6 +839,26 @@ def branch_candidate(net, config, dbu, sites):
             tree_guard_reference=_tree_reference(original))
     return choice
 
+def single_trunk_candidate(net, config, dbu, sites):
+    """One upper trunk and one return: exactly two HBTs, with per-sink guards.
+
+    The fixed branch geometry helper can produce a single remote group. Keep
+    that count internal so user-supplied branch counts cannot relax the HBT
+    limit. Near or detouring receivers remain on the driver subnet.
+    """
+    if any(p.get("pin") in {"CK", "CLK", "CLKN", "CKN", "clk"}
+           for p in net["pins"]):
+        return None
+    guarded = dict(config, multi_branch_max_groups=1,
+                   multi_branch_sink_guard=True)
+    choice = _fixed_branch_candidate(net, guarded, dbu, sites)
+    if choice is None:
+        return None
+    if len(choice["groups"]) != 1 or len(choice["positions"]) != 2:
+        raise ValueError("Single-trunk MLS must use exactly two HBTs")
+    return choice
+
+
 def build_branch_entry(net, choice, hnames, dbu, size):
     groups, points = choice["groups"], choice["positions"]
     names = [f"{net['name']}__MLS__S{i}__{'TOP' if i == 1 else 'BOT'}"
@@ -848,6 +920,8 @@ def plan_design(manifest, config=None):
     result = {"version": 2, "config": config, "selected": [],
               "relocations": relocations, "stats": stats}
     if not config["enabled"] or budget < 2 or config["max_shared_nets"] == 0:
+        if config["enabled"] and config["relocation_enabled"] and config["post_refine_passes"]:
+            refine_existing_hbts(manifest, original_manifest, result)
         validate_plan(original_manifest, result)
         return result
     demand = DemandGrid(area, config["grid_bins"], manifest["nets"], dbu)
@@ -865,22 +939,22 @@ def plan_design(manifest, config=None):
             skipped[reason] += 1
     stats["candidate_nets"] = len(candidates)
     identifier = 0
-    stats["multi_branch_candidates"] = 0
-    stats["multi_branch_selected"] = 0
-    stats["multi_branch_hbts"] = 0
-    stats["multi_branch_source_local_sinks"] = 0
-    stats["multi_branch_remote_sinks"] = 0
-    if config["multi_branch_enabled"]:
+    stats["single_trunk_candidates"] = 0
+    stats["single_trunk_selected"] = 0
+    stats["single_trunk_hbts"] = 0
+    stats["single_trunk_source_local_sinks"] = 0
+    stats["single_trunk_remote_sinks"] = 0
+    if config["single_trunk_enabled"]:
         branches = []
         for net in manifest["nets"]:
-            choice = branch_candidate(net, config, dbu, sites)
+            choice = single_trunk_candidate(net, config, dbu, sites)
             if choice:
                 branches.append((choice["score"], net["name"], net))
-        stats["multi_branch_candidates"] = len(branches)
+        stats["single_trunk_candidates"] = len(branches)
         for _, _, net in sorted(branches, key=lambda item: (-item[0], item[1])):
             if len(result["selected"]) >= config["max_shared_nets"]:
                 break
-            choice = branch_candidate(net, config, dbu, sites)
+            choice = single_trunk_candidate(net, config, dbu, sites)
             if choice is None:
                 skipped["branch_updated_geometry"] += 1
                 continue
@@ -904,10 +978,10 @@ def plan_design(manifest, config=None):
             for point in choice["positions"]:
                 sites.reserve(point)
             stats["new_hbts"] += count
-            stats["multi_branch_selected"] += 1
-            stats["multi_branch_hbts"] += count
-            stats["multi_branch_source_local_sinks"] += len(choice["local_sinks"])
-            stats["multi_branch_remote_sinks"] += sum(len(group) for group in choice["groups"])
+            stats["single_trunk_selected"] += 1
+            stats["single_trunk_hbts"] += count
+            stats["single_trunk_source_local_sinks"] += len(choice["local_sinks"])
+            stats["single_trunk_remote_sinks"] += sum(len(group) for group in choice["groups"])
             if config["dynamic_demand"]:
                 demand.adjust("bottom", net["pins"], -1, dbu)
                 root = {"x": choice["positions"][0][0], "y": choice["positions"][0][1]}
@@ -991,8 +1065,41 @@ def plan_design(manifest, config=None):
         stats["new_hbts"] += 2
     stats["selected_nets"] = len(result["selected"])
     stats["skipped"] = dict(sorted(skipped.items()))
+    if config["relocation_enabled"] and config["post_refine_passes"]:
+        refine_existing_hbts(manifest, original_manifest, result)
     validate_plan(original_manifest, result)
     return result
+
+
+def refine_existing_hbts(placed_manifest, original_manifest, plan):
+    """Shorten existing families after allocating MLS sites, keeping MLS fixed.
+
+    Every incident net's HPWL and every unambiguous cross-die driver-to-sink
+    Manhattan path must not grow. These are geometry guards, not STA guarantees.
+    New MLS HBTs occupy sites but have no incident nets in this manifest, so the
+    optimizer protects their positions. Original ambiguous families stay fixed.
+    """
+    from hbt_optimizer import optimize_hbts
+    reserved = [h for entry in plan["selected"] for h in entry["hbts"]]
+    manifest = dict(placed_manifest, hbts=placed_manifest["hbts"] + reserved)
+    refined, moves, stats = optimize_hbts(manifest, {
+        "passes": plan["config"]["post_refine_passes"],
+        "max_moves": plan["config"]["relocation_max_moves"],
+        "search_radius": plan["config"]["relocation_radius"],
+        "min_improvement_um": plan["config"]["relocation_min_improvement_um"],
+        "path_max_growth_fraction": 0.0, "path_max_growth_um": 0.0,
+        "preserve_incident_hpwl": True,
+    })
+    originals = {h["name"]: h for h in original_manifest["hbts"]}
+    current = {h["name"]: h for h in plan["relocations"]}
+    for move in moves:
+        before = originals[move["name"]]
+        current[move["name"]] = dict(move, before_x=before["x"], before_y=before["y"])
+    plan["relocations"] = [current[name] for name in sorted(current)
+                           if (current[name]["x"], current[name]["y"])
+                           != (originals[name]["x"], originals[name]["y"])]
+    plan["stats"]["post_refinement"] = dict(stats, reserved_new_hbts=len(reserved))
+    plan["post_refinement_moves"] = moves
 
 
 def validate_plan(manifest, plan):
@@ -1033,6 +1140,9 @@ def validate_plan(manifest, plan):
     identities = {h["name"] for h in existing}
     selected_names = set()
     for entry in plan["selected"]:
+        if len(entry["hbts"]) != 2 or len(entry["subnets"]) != 3:
+            raise ValueError("Each original 2D MLS net must use exactly two HBTs "
+                             "and three subnets")
         if entry["original"] in selected_names:
             raise ValueError("Original net selected more than once")
         selected_names.add(entry["original"])
@@ -1132,7 +1242,8 @@ def validate_plan(manifest, plan):
         if visited != {s["name"] for s in entry["subnets"]}:
             raise ValueError("Disconnected MLS family")
         if (entry.get("topology") == "shared_trunk_sink_groups"
-                and plan["config"]["multi_branch_sink_guard"]):
+                and (plan["config"]["multi_branch_sink_guard"]
+                     or plan["config"].get("single_trunk_enabled", False))):
             # Independently reconstruct the unique HBT path for every sink;
             # do not trust aggregate score or the generator's proxy metadata.
             dbu = manifest["dbu_per_micron"]
@@ -1195,6 +1306,11 @@ def tcl_word(value):
 def emit_tcl(plan):
     lines = ["# Generated MLS edits; executed inside GRT_PREPARE_TCL.",
              "set mls_block [ord::get_db_block]", "set mls_db [ord::get_db]"]
+    lines.append("set ::grt_post_refinement_moves [list]")
+    for h in plan.get("post_refinement_moves", []):
+        dx, dy = h["x"] - h["origin_x"], h["y"] - h["origin_y"]
+        lines.append(f'lappend ::grt_post_refinement_moves [list {tcl_word(h["name"])} '
+                     f'{h["before_x"] - dx} {h["before_y"] - dy} {h["origin_x"]} {h["origin_y"]}]')
     for h in plan.get("relocations", []):
         lines += [f"set mls_inst [$mls_block findInst {tcl_word(h['name'])}]",
                   'if {$mls_inst eq "NULL"} {error "Relocated HBT instance missing"}',
@@ -1288,7 +1404,9 @@ def main():
             if net["name"] in slacks:
                 net["slack_ns"] = slacks[net["name"]]
     plan = plan_design(manifest, overrides)
-    args.plan.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Keep every plan field while using the C JSON encoder for this large
+    # machine-readable intermediate; pretty-printing visits it in Python.
+    args.plan.write_text(json.dumps(plan, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     args.apply_tcl.write_text(emit_tcl(plan), encoding="utf-8")
     print(json.dumps(plan["stats"], ensure_ascii=False))
     if args.layer_hints_token is not None:
@@ -1298,4 +1416,14 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # This short-lived CLI builds acyclic JSON/geometry records. Reference
+    # counting still releases discarded objects; avoid repeatedly tracing the
+    # entire live netlist while creating temporary planning records. Library
+    # callers keep their own GC policy, and restore the entry state on errors.
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        raise SystemExit(main())
+    finally:
+        if gc_was_enabled:
+            gc.enable()
